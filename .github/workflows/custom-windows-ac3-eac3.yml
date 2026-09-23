@@ -11,63 +11,70 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: custom-electron-windows-ac3-eac3
+  cancel-in-progress: false
+
 env:
   ELECTRON_REVISION: v44.4.4
+  BUILD_ROOT: 'C:\electron-build'
   DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
   CI: '1'
-  # Fast non-official build for the Lampa runtime. Keep codec switches explicit.
+  vs2022_install: 'C:\BuildTools'
+  WINDOWSSDKDIR: 'C:\Program Files (x86)\Windows Kits\10'
   GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 angle_enable_vulkan=false dawn_enable_vulkan=false'
 
 jobs:
   build-windows-x64:
-    name: Windows x64 AC3-EAC3
-    runs-on: windows-2025
-    timeout-minutes: 360
+    name: Windows x64 AC3-EAC3 self-hosted
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 1440
 
     defaults:
       run:
         shell: cmd
 
     steps:
-      - name: Show disk space
+      - name: Verify self-hosted build machine
         shell: powershell
         run: |
+          Write-Host "===== Machine ====="
+          Get-CimInstance Win32_ComputerSystem | Select-Object Name,NumberOfLogicalProcessors,@{N='RAM_GB';E={[math]::Round($_.TotalPhysicalMemory/1GB,1)}} | Format-List
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
-      - name: Move build caches and temp to large D drive
-        shell: powershell
-        run: |
-          $paths = @(
-            'D:\electron-build-temp',
-            'D:\electron-go-cache',
-            'D:\electron-go-tmp',
-            'D:\electron-npm-cache',
-            'D:\electron-git-cache'
-          )
-          foreach ($path in $paths) {
-            New-Item -ItemType Directory -Force -Path $path | Out-Null
-          }
+          Write-Host "===== Toolchain ====="
+          git --version
+          node --version
+          python --version
 
-          "TEMP=D:\electron-build-temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMP=D:\electron-build-temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GOCACHE=D:\electron-go-cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GOTMPDIR=D:\electron-go-tmp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "NPM_CONFIG_CACHE=D:\electron-npm-cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          $gitCacheLink = Join-Path $env:USERPROFILE '.git_cache'
-          if (Test-Path $gitCacheLink) {
-            cmd /c rmdir "$gitCacheLink" 2>$null
-            if (Test-Path $gitCacheLink) {
-              Remove-Item $gitCacheLink -Recurse -Force -ErrorAction SilentlyContinue
-            }
+          $cl = Get-ChildItem 'C:\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$cl) {
+            throw 'MSVC x64 compiler not found under C:\BuildTools'
           }
-          cmd /c mklink /J "$gitCacheLink" "D:\electron-git-cache"
-          if (!(Test-Path $gitCacheLink)) {
-            throw "Failed to redirect Chromium git cache to D:"
-          }
+          Write-Host "MSVC: $($cl.FullName)"
 
-          Write-Host "TEMP/TMP, Go cache and Chromium git cache redirected to D:"
-          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+          $sdk = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory -ErrorAction SilentlyContinue |
+            Where-Object Name -Match '^10\.' |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (!$sdk) {
+            throw 'Windows SDK not found'
+          }
+          Write-Host "Windows SDK: $($sdk.Name)"
+
+          New-Item -ItemType Directory -Force -Path $env:BUILD_ROOT,'C:\electron-temp','C:\electron-go-cache' | Out-Null
+          "TEMP=C:\electron-temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=C:\electron-temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOCACHE=C:\electron-go-cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          try {
+            Add-MpPreference -ExclusionPath $env:BUILD_ROOT -ErrorAction Stop
+            Write-Host "Windows Defender exclusion ensured for $env:BUILD_ROOT"
+          } catch {
+            Write-Warning "Could not change Defender exclusions: $($_.Exception.Message)"
+          }
 
       - name: Configure Git for Chromium checkout
         run: |
@@ -78,24 +85,11 @@ jobs:
           git config --global core.fscache true
           git config --global core.preloadindex true
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.10'
-
       - name: Install Electron build tools
         shell: powershell
         run: |
-          npm install -g @electron/build-tools@2.1.5
+          npm install -g @electron/build-tools@2.1.5 --no-fund --no-audit
 
-      - name: Locate Electron build tools wrapper
-        shell: powershell
-        run: |
           $npmRoot = (npm root -g).Trim()
           $wrapper = Join-Path $npmRoot '@electron\build-tools\run.js'
           Write-Host "npm root: $npmRoot"
@@ -105,48 +99,26 @@ jobs:
           }
           "BUILD_TOOLS_WRAPPER=$wrapper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Verify Electron build tools
+      - name: Select or initialize persistent Electron build
         run: |
-          node "%BUILD_TOOLS_WRAPPER%" --help
-
-      - name: Initialize fast Electron build
-        run: |
-          node "%BUILD_TOOLS_WRAPPER%" init ac3-fast --root electron --import testing --out Release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
+          node "%BUILD_TOOLS_WRAPPER%" use ac3-fast || node "%BUILD_TOOLS_WRAPPER%" init ac3-fast --root "%BUILD_ROOT%" --import testing --out Release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
+          node "%BUILD_TOOLS_WRAPPER%" show current
 
       - name: Sync Electron and Chromium sources
         run: |
+          echo ===== Sync started %DATE% %TIME% =====
           node "%BUILD_TOOLS_WRAPPER%" sync --revision %ELECTRON_REVISION%
+          echo ===== Sync finished %DATE% %TIME% =====
 
-      - name: Reclaim checkout cache after sync
+      - name: Show disk after sync
         shell: powershell
         run: |
-          Write-Host "===== Disk before post-sync cleanup ====="
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
-
-          $gitCacheLink = Join-Path $env:USERPROFILE '.git_cache'
-          if (Test-Path $gitCacheLink) {
-            cmd /c rmdir "$gitCacheLink"
+          if (Test-Path $env:BUILD_ROOT) {
+            $bytes = (Get-ChildItem $env:BUILD_ROOT -Recurse -Force -File -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum
+            Write-Host ("Persistent Electron tree: {0:N2} GB" -f ($bytes / 1GB))
           }
-          if (Test-Path 'D:\electron-git-cache') {
-            Remove-Item 'D:\electron-git-cache' -Recurse -Force -ErrorAction SilentlyContinue
-          }
-
-          npm cache clean --force | Out-Host
-
-          $oldTemp = Join-Path $env:LOCALAPPDATA 'Temp'
-          if (Test-Path $oldTemp) {
-            Get-ChildItem $oldTemp -Force -ErrorAction SilentlyContinue |
-              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          }
-
-          foreach ($path in @($env:TEMP, $env:GOCACHE, $env:GOTMPDIR)) {
-            if (!(Test-Path $path)) {
-              New-Item -ItemType Directory -Force -Path $path | Out-Null
-            }
-          }
-
-          Write-Host "===== Disk after post-sync cleanup ====="
-          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       - name: Generate GN config and build FFmpeg
         run: |
@@ -155,10 +127,11 @@ jobs:
       - name: Verify AC3-EAC3 and fast-build flags
         shell: powershell
         run: |
-          $argsPath = 'electron\src\out\Release\args.gn'
+          $argsPath = Join-Path $env:BUILD_ROOT 'src\out\Release\args.gn'
           if (!(Test-Path $argsPath)) {
             throw "GN args file not found: $argsPath"
           }
+
           $gn = Get-Content $argsPath -Raw
           Write-Host '===== Effective relevant GN args ====='
           Get-Content $argsPath | Select-String 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding|is_official_build|symbol_level|angle_enable_vulkan|dawn_enable_vulkan'
@@ -171,34 +144,18 @@ jobs:
             'angle_enable_vulkan\s*=\s*false',
             'dawn_enable_vulkan\s*=\s*false'
           )
+
           foreach ($pattern in $required) {
             if ($gn -notmatch $pattern) {
               throw "Required GN setting missing: $pattern"
             }
           }
 
-      - name: Clean temp before full build
-        shell: powershell
-        run: |
-          foreach ($path in @($env:TEMP, $env:GOCACHE, $env:GOTMPDIR)) {
-            if (Test-Path $path) {
-              Get-ChildItem $path -Force -ErrorAction SilentlyContinue |
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            New-Item -ItemType Directory -Force -Path $path | Out-Null
-          }
-
-          Write-Host "===== Disk before Electron build ====="
-          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
-
-          $d = Get-PSDrive D
-          if ($d.Free -lt 55GB) {
-            throw ("Not enough free space on D: before compile: {0:N2} GB" -f ($d.Free / 1GB))
-          }
-
       - name: Build Electron distribution
         run: |
+          echo ===== Electron build started %DATE% %TIME% =====
           node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target electron:electron_dist_zip
+          echo ===== Electron build finished %DATE% %TIME% =====
 
       - name: Show disk after build
         if: always()
@@ -209,14 +166,16 @@ jobs:
       - name: Prepare artifact
         shell: powershell
         run: |
-          $source = 'electron\src\out\Release\dist.zip'
+          $source = Join-Path $env:BUILD_ROOT 'src\out\Release\dist.zip'
           if (!(Test-Path $source)) {
-            Get-ChildItem 'electron\src\out\Release' -Filter '*.zip' -Recurse -ErrorAction SilentlyContinue |
+            Get-ChildItem (Join-Path $env:BUILD_ROOT 'src\out\Release') -Filter '*.zip' -Recurse -ErrorAction SilentlyContinue |
               Select-Object FullName,Length
             throw 'Electron dist.zip was not produced'
           }
-          Copy-Item $source 'electron-v44.4.4-win32-x64-ac3-eac3.zip'
-          Get-Item 'electron-v44.4.4-win32-x64-ac3-eac3.zip' | Format-List Name,Length,FullName
+
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'electron-v44.4.4-win32-x64-ac3-eac3.zip'
+          Copy-Item $source $dest -Force
+          Get-Item $dest | Format-List Name,Length,FullName
 
       - name: Upload custom Electron
         uses: actions/upload-artifact@v4
