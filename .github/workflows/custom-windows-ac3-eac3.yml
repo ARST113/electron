@@ -22,7 +22,7 @@ env:
   CI: '1'
   vs2022_install: 'C:\BuildTools'
   WINDOWSSDKDIR: 'C:\Program Files (x86)\Windows Kits\10'
-  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 angle_enable_vulkan=false dawn_enable_vulkan=false'
+  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0'
 
 jobs:
   build-windows-x64:
@@ -134,7 +134,7 @@ jobs:
 
           $gn = Get-Content $argsPath -Raw
           Write-Host '===== Effective relevant GN args ====='
-          Get-Content $argsPath | Select-String 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding|is_official_build|symbol_level|angle_enable_vulkan|dawn_enable_vulkan'
+          Get-Content $argsPath | Select-String 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding|is_official_build|symbol_level|dawn_enable_vulkan|dawn_use_swiftshader'
 
           $required = @(
             'enable_platform_ac3_eac3_audio\s*=\s*true',
