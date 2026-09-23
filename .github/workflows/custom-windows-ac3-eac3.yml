@@ -53,8 +53,8 @@ jobs:
           python-version: '3.10'
 
       - name: Install Electron build tools
+        shell: powershell
         run: |
-          corepack enable
           npm install -g @electron/build-tools@2.1.5
 
       - name: Locate Electron build tools wrapper
