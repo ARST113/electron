@@ -55,56 +55,74 @@ jobs:
       - name: Install Electron build tools
         run: |
           corepack enable
-          corepack install -g yarn
           npm install -g @electron/build-tools@2.1.5
 
-      - name: Add npm global bin to PATH
+      - name: Locate Electron build tools wrapper
         shell: powershell
         run: |
-          $prefix = (npm prefix -g).Trim()
-          Write-Host "npm global prefix: $prefix"
-          $prefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Get-ChildItem $prefix | Where-Object { $_.Name -match '^e(\.cmd|\.ps1|\.exe)?$' } | Format-Table Name,FullName
+          $npmRoot = (npm root -g).Trim()
+          $wrapper = Join-Path $npmRoot '@electron\build-tools\run.js'
+          Write-Host "npm root: $npmRoot"
+          Write-Host "build-tools wrapper: $wrapper"
+          if (!(Test-Path $wrapper)) {
+            Get-ChildItem -Path $npmRoot -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'electron|build-tools|run\.js' } |
+              Select-Object -First 100 FullName
+            throw "Could not find @electron/build-tools/run.js"
+          }
+          "BUILD_TOOLS_WRAPPER=$wrapper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Verify Electron build tools
         run: |
-          where e
-          e --help
+          node "%BUILD_TOOLS_WRAPPER%" --help
 
       - name: Initialize Electron release build
         run: |
-          e init ac3-release --root electron --import release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
+          node "%BUILD_TOOLS_WRAPPER%" init ac3-release --root electron --import release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
 
       - name: Sync Electron and Chromium sources
         run: |
-          e sync --revision %ELECTRON_REVISION%
+          node "%BUILD_TOOLS_WRAPPER%" sync --revision %ELECTRON_REVISION%
 
-      - name: Build FFmpeg and generate GN configuration
+      - name: Generate GN config and build FFmpeg
         run: |
-          e build third_party/ffmpeg:ffmpeg
+          node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target third_party/ffmpeg:ffmpeg
 
       - name: Verify AC3-EAC3 build flags
+        shell: powershell
         run: |
-          echo ===== Effective Electron GN args =====
-          type electron\src\out\Release\args.gn
-          echo ===== Required codec flags =====
-          findstr /I /C:"enable_platform_ac3_eac3_audio=true" electron\src\out\Release\args.gn
-          findstr /I /C:"proprietary_codecs=true" electron\src\out\Release\args.gn
-          findstr /I /C:"ffmpeg_branding=\"Chrome\"" electron\src\out\Release\args.gn
+          $argsPath = 'electron\src\out\Release\args.gn'
+          if (!(Test-Path $argsPath)) {
+            throw "GN args file not found: $argsPath"
+          }
+          $gn = Get-Content $argsPath -Raw
+          Write-Host '===== Effective codec-related GN args ====='
+          Get-Content $argsPath | Select-String 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding'
+          if ($gn -notmatch 'enable_platform_ac3_eac3_audio\s*=\s*true') {
+            throw 'enable_platform_ac3_eac3_audio is not true'
+          }
+          if ($gn -notmatch 'proprietary_codecs\s*=\s*true') {
+            throw 'proprietary_codecs is not true'
+          }
+          if ($gn -notmatch 'ffmpeg_branding\s*=\s*"Chrome"') {
+            throw 'ffmpeg_branding is not Chrome'
+          }
 
       - name: Build Electron distribution
         run: |
-          e build electron:electron_dist_zip
+          node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target electron:electron_dist_zip
 
       - name: Prepare artifact
         shell: powershell
         run: |
-          $source = "electron\src\out\Release\dist.zip"
+          $source = 'electron\src\out\Release\dist.zip'
           if (!(Test-Path $source)) {
-            throw "Electron dist.zip was not produced"
+            Get-ChildItem 'electron\src\out\Release' -Filter '*.zip' -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName,Length
+            throw 'Electron dist.zip was not produced'
           }
-          Copy-Item $source "electron-v44.4.4-win32-x64-ac3-eac3.zip"
-          Get-Item "electron-v44.4.4-win32-x64-ac3-eac3.zip" | Format-List Name,Length,FullName
+          Copy-Item $source 'electron-v44.4.4-win32-x64-ac3-eac3.zip'
+          Get-Item 'electron-v44.4.4-win32-x64-ac3-eac3.zip' | Format-List Name,Length,FullName
 
       - name: Upload custom Electron
         uses: actions/upload-artifact@v4
