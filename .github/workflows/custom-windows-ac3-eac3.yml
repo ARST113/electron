@@ -15,7 +15,7 @@ env:
   ELECTRON_REVISION: v44.4.4
   DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
   CI: '1'
-  # Fast non-official build for the Lampa runtime. Keep the codec switches explicit.
+  # Fast non-official build for the Lampa runtime. Keep codec switches explicit.
   GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 angle_enable_vulkan=false dawn_enable_vulkan=false'
 
 jobs:
@@ -32,6 +32,41 @@ jobs:
       - name: Show disk space
         shell: powershell
         run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Move build caches and temp to large D drive
+        shell: powershell
+        run: |
+          $paths = @(
+            'D:\electron-build-temp',
+            'D:\electron-go-cache',
+            'D:\electron-go-tmp',
+            'D:\electron-npm-cache',
+            'D:\electron-git-cache'
+          )
+          foreach ($path in $paths) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
+
+          "TEMP=D:\electron-build-temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=D:\electron-build-temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOCACHE=D:\electron-go-cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOTMPDIR=D:\electron-go-tmp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NPM_CONFIG_CACHE=D:\electron-npm-cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $gitCacheLink = Join-Path $env:USERPROFILE '.git_cache'
+          if (Test-Path $gitCacheLink) {
+            cmd /c rmdir "$gitCacheLink" 2>$null
+            if (Test-Path $gitCacheLink) {
+              Remove-Item $gitCacheLink -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          cmd /c mklink /J "$gitCacheLink" "D:\electron-git-cache"
+          if (!(Test-Path $gitCacheLink)) {
+            throw "Failed to redirect Chromium git cache to D:"
+          }
+
+          Write-Host "TEMP/TMP, Go cache and Chromium git cache redirected to D:"
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       - name: Configure Git for Chromium checkout
@@ -82,18 +117,18 @@ jobs:
         run: |
           node "%BUILD_TOOLS_WRAPPER%" sync --revision %ELECTRON_REVISION%
 
-      - name: Reclaim system disk after sync
+      - name: Reclaim checkout cache after sync
         shell: powershell
         run: |
-          Write-Host "===== Disk before cleanup ====="
+          Write-Host "===== Disk before post-sync cleanup ====="
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
-          $gitCache = Join-Path $env:USERPROFILE '.git_cache'
-          if (Test-Path $gitCache) {
-            $bytes = (Get-ChildItem $gitCache -Recurse -Force -ErrorAction SilentlyContinue |
-              Measure-Object -Property Length -Sum).Sum
-            Write-Host ("Deleting Chromium git cache: {0:N2} GB" -f ($bytes / 1GB))
-            Remove-Item $gitCache -Recurse -Force -ErrorAction SilentlyContinue
+          $gitCacheLink = Join-Path $env:USERPROFILE '.git_cache'
+          if (Test-Path $gitCacheLink) {
+            cmd /c rmdir "$gitCacheLink"
+          }
+          if (Test-Path 'D:\electron-git-cache') {
+            Remove-Item 'D:\electron-git-cache' -Recurse -Force -ErrorAction SilentlyContinue
           }
 
           npm cache clean --force | Out-Host
@@ -104,14 +139,13 @@ jobs:
               Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          $buildTemp = 'C:\electron-build-temp'
-          $goCache = 'C:\electron-go-cache'
-          New-Item -ItemType Directory -Force -Path $buildTemp,$goCache | Out-Null
-          "TEMP=$buildTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMP=$buildTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GOCACHE=$goCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          foreach ($path in @($env:TEMP, $env:GOCACHE, $env:GOTMPDIR)) {
+            if (!(Test-Path $path)) {
+              New-Item -ItemType Directory -Force -Path $path | Out-Null
+            }
+          }
 
-          Write-Host "===== Disk after cleanup ====="
+          Write-Host "===== Disk after post-sync cleanup ====="
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       - name: Generate GN config and build FFmpeg
@@ -146,20 +180,31 @@ jobs:
       - name: Clean temp before full build
         shell: powershell
         run: |
-          if (Test-Path $env:TEMP) {
-            Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue |
-              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          foreach ($path in @($env:TEMP, $env:GOCACHE, $env:GOTMPDIR)) {
+            if (Test-Path $path) {
+              Get-ChildItem $path -Force -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
           }
-          if (Test-Path $env:GOCACHE) {
-            Get-ChildItem $env:GOCACHE -Force -ErrorAction SilentlyContinue |
-              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          }
+
           Write-Host "===== Disk before Electron build ====="
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+          $d = Get-PSDrive D
+          if ($d.Free -lt 55GB) {
+            throw ("Not enough free space on D: before compile: {0:N2} GB" -f ($d.Free / 1GB))
+          }
 
       - name: Build Electron distribution
         run: |
           node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target electron:electron_dist_zip
+
+      - name: Show disk after build
+        if: always()
+        shell: powershell
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       - name: Prepare artifact
         shell: powershell
