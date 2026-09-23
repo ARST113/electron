@@ -15,7 +15,8 @@ env:
   ELECTRON_REVISION: v44.4.4
   DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
   CI: '1'
-  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4"'
+  # Fast non-official build for the Lampa runtime. Keep the codec switches explicit.
+  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 angle_enable_vulkan=false dawn_enable_vulkan=false'
 
 jobs:
   build-windows-x64:
@@ -65,9 +66,6 @@ jobs:
           Write-Host "npm root: $npmRoot"
           Write-Host "build-tools wrapper: $wrapper"
           if (!(Test-Path $wrapper)) {
-            Get-ChildItem -Path $npmRoot -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match 'electron|build-tools|run\.js' } |
-              Select-Object -First 100 FullName
             throw "Could not find @electron/build-tools/run.js"
           }
           "BUILD_TOOLS_WRAPPER=$wrapper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -76,19 +74,51 @@ jobs:
         run: |
           node "%BUILD_TOOLS_WRAPPER%" --help
 
-      - name: Initialize Electron release build
+      - name: Initialize fast Electron build
         run: |
-          node "%BUILD_TOOLS_WRAPPER%" init ac3-release --root electron --import release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
+          node "%BUILD_TOOLS_WRAPPER%" init ac3-fast --root electron --import testing --out Release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
 
       - name: Sync Electron and Chromium sources
         run: |
           node "%BUILD_TOOLS_WRAPPER%" sync --revision %ELECTRON_REVISION%
 
+      - name: Reclaim system disk after sync
+        shell: powershell
+        run: |
+          Write-Host "===== Disk before cleanup ====="
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+          $gitCache = Join-Path $env:USERPROFILE '.git_cache'
+          if (Test-Path $gitCache) {
+            $bytes = (Get-ChildItem $gitCache -Recurse -Force -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum
+            Write-Host ("Deleting Chromium git cache: {0:N2} GB" -f ($bytes / 1GB))
+            Remove-Item $gitCache -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          npm cache clean --force | Out-Host
+
+          $oldTemp = Join-Path $env:LOCALAPPDATA 'Temp'
+          if (Test-Path $oldTemp) {
+            Get-ChildItem $oldTemp -Force -ErrorAction SilentlyContinue |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          $buildTemp = 'C:\electron-build-temp'
+          $goCache = 'C:\electron-go-cache'
+          New-Item -ItemType Directory -Force -Path $buildTemp,$goCache | Out-Null
+          "TEMP=$buildTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$buildTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOCACHE=$goCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "===== Disk after cleanup ====="
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
       - name: Generate GN config and build FFmpeg
         run: |
           node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target third_party/ffmpeg:ffmpeg
 
-      - name: Verify AC3-EAC3 build flags
+      - name: Verify AC3-EAC3 and fast-build flags
         shell: powershell
         run: |
           $argsPath = 'electron\src\out\Release\args.gn'
@@ -96,17 +126,36 @@ jobs:
             throw "GN args file not found: $argsPath"
           }
           $gn = Get-Content $argsPath -Raw
-          Write-Host '===== Effective codec-related GN args ====='
-          Get-Content $argsPath | Select-String 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding'
-          if ($gn -notmatch 'enable_platform_ac3_eac3_audio\s*=\s*true') {
-            throw 'enable_platform_ac3_eac3_audio is not true'
+          Write-Host '===== Effective relevant GN args ====='
+          Get-Content $argsPath | Select-String 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding|is_official_build|symbol_level|angle_enable_vulkan|dawn_enable_vulkan'
+
+          $required = @(
+            'enable_platform_ac3_eac3_audio\s*=\s*true',
+            'proprietary_codecs\s*=\s*true',
+            'ffmpeg_branding\s*=\s*"Chrome"',
+            'symbol_level\s*=\s*0',
+            'angle_enable_vulkan\s*=\s*false',
+            'dawn_enable_vulkan\s*=\s*false'
+          )
+          foreach ($pattern in $required) {
+            if ($gn -notmatch $pattern) {
+              throw "Required GN setting missing: $pattern"
+            }
           }
-          if ($gn -notmatch 'proprietary_codecs\s*=\s*true') {
-            throw 'proprietary_codecs is not true'
+
+      - name: Clean temp before full build
+        shell: powershell
+        run: |
+          if (Test-Path $env:TEMP) {
+            Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
           }
-          if ($gn -notmatch 'ffmpeg_branding\s*=\s*"Chrome"') {
-            throw 'ffmpeg_branding is not Chrome'
+          if (Test-Path $env:GOCACHE) {
+            Get-ChildItem $env:GOCACHE -Force -ErrorAction SilentlyContinue |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
           }
+          Write-Host "===== Disk before Electron build ====="
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       - name: Build Electron distribution
         run: |
