@@ -1,0 +1,102 @@
+name: Custom Electron Windows AC3-EAC3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/custom-windows-ac3-eac3.yml'
+
+permissions:
+  contents: read
+
+env:
+  ELECTRON_REVISION: v44.4.4
+  DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+  CI: '1'
+  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4"'
+
+jobs:
+  build-windows-x64:
+    name: Windows x64 AC3-EAC3
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Show disk space
+        shell: powershell
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Configure Git for Chromium checkout
+        run: |
+          git config --global core.filemode false
+          git config --global core.autocrlf false
+          git config --global branch.autosetuprebase always
+          git config --global core.longpaths true
+          git config --global core.fscache true
+          git config --global core.preloadindex true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Install Electron build tools
+        run: |
+          corepack enable
+          corepack install -g yarn
+          npm install -g @electron/build-tools
+
+      - name: Initialize Electron release build
+        run: |
+          e init ac3-release --root electron --import release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
+
+      - name: Sync Electron and Chromium sources
+        run: |
+          e sync --revision %ELECTRON_REVISION%
+
+      - name: Build FFmpeg and generate GN configuration
+        run: |
+          e build third_party/ffmpeg:ffmpeg
+
+      - name: Verify AC3-EAC3 build flags
+        run: |
+          echo ===== Effective Electron GN args =====
+          type electron\src\out\Release\args.gn
+          echo ===== Required codec flags =====
+          findstr /I /C:"enable_platform_ac3_eac3_audio=true" electron\src\out\Release\args.gn
+          findstr /I /C:"proprietary_codecs=true" electron\src\out\Release\args.gn
+          findstr /I /C:"ffmpeg_branding=\"Chrome\"" electron\src\out\Release\args.gn
+
+      - name: Build Electron distribution
+        run: |
+          e build electron:electron_dist_zip
+
+      - name: Prepare artifact
+        shell: powershell
+        run: |
+          $source = "electron\src\out\Release\dist.zip"
+          if (!(Test-Path $source)) {
+            throw "Electron dist.zip was not produced"
+          }
+          Copy-Item $source "electron-v44.4.4-win32-x64-ac3-eac3.zip"
+          Get-Item "electron-v44.4.4-win32-x64-ac3-eac3.zip" | Format-List Name,Length,FullName
+
+      - name: Upload custom Electron
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-v44.4.4-win32-x64-ac3-eac3
+          path: electron-v44.4.4-win32-x64-ac3-eac3.zip
+          compression-level: 0
+          retention-days: 14
