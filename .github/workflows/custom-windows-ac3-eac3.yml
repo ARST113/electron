@@ -77,6 +77,43 @@ jobs:
             Write-Warning "Could not change Defender exclusions: $($_.Exception.Message)"
           }
 
+      - name: Ensure Windows SDK Debugging Tools
+        shell: powershell
+        timeout-minutes: 15
+        run: |
+          $debuggerFiles = @('dbghelp.dll', 'dbgcore.dll') | ForEach-Object {
+            Join-Path $env:WINDOWSSDKDIR "Debuggers\x64\$_"
+          }
+          $missing = @($debuggerFiles | Where-Object { !(Test-Path -LiteralPath $_) })
+          if ($missing.Count -gt 0) {
+            Write-Host "Installing missing Windows SDK Debugging Tools: $($missing -join ', ')"
+            $sdkEntry = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -match 'Windows Software Development Kit.*10\.0\.26100' -and $_.BundleCachePath } |
+              Sort-Object DisplayVersion -Descending |
+              Select-Object -First 1
+            $installer = $sdkEntry.BundleCachePath
+            if (!$installer -or !(Test-Path -LiteralPath $installer)) {
+              $installer = Join-Path $env:TEMP 'winsdksetup-26100.exe'
+              Invoke-WebRequest -UseBasicParsing -Uri 'https://go.microsoft.com/fwlink/?linkid=2349110' -OutFile $installer
+            }
+            $signature = Get-AuthenticodeSignature -FilePath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw "Windows SDK installer has an invalid Microsoft signature: $installer"
+            }
+            $installLog = Join-Path $env:TEMP 'windows-sdk-debuggers-install.log'
+            $installArgs = @('/features', 'OptionId.WindowsDesktopDebuggers', '/quiet', '/norestart', '/log', ('"{0}"' -f $installLog))
+            $process = Start-Process -FilePath $installer -ArgumentList $installArgs -WindowStyle Hidden -Wait -PassThru
+            Write-Host "Windows SDK Debugging Tools installer exit code: $($process.ExitCode)"
+            if ($process.ExitCode -notin @(0, 3010)) {
+              if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog -Tail 100 }
+              throw "Windows SDK Debugging Tools installation failed: $($process.ExitCode)"
+            }
+          }
+          foreach ($file in $debuggerFiles) {
+            if (!(Test-Path -LiteralPath $file)) { throw "Required SDK debugger DLL missing: $file" }
+            Get-Item -LiteralPath $file | Select-Object FullName,@{N='Version';E={$_.VersionInfo.FileVersion}} | Format-List
+          }
+
       - name: Configure Git for Chromium checkout
         run: |
           git config --global core.filemode false
