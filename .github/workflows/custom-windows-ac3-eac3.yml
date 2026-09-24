@@ -221,6 +221,33 @@ jobs:
             Write-Host ("Persistent Electron tree: {0:N2} GB" -f ($bytes / 1GB))
           }
 
+      - name: Fix localized Windows ACL output decoding
+        shell: python {0}
+        run: |
+          import ast
+          import os
+          from pathlib import Path
+          import shutil
+
+          common = Path(os.environ['BUILD_ROOT']) / 'src' / 'testing' / 'scripts' / 'common.py'
+          source = common.read_text(encoding='utf-8')
+          old = """    existing_acls = subprocess.check_output(['icacls', acl_dir],
+                                                      stderr=subprocess.STDOUT,
+                                                      universal_newlines=True)"""
+          new = old.replace('universal_newlines=True)', "universal_newlines=True, encoding='oem')")
+          if source.count(old) == 1:
+              updated = source.replace(old, new)
+              ast.parse(updated)
+              backup = common.with_name('common.py.before-oem')
+              if not backup.exists():
+                  shutil.copyfile(common, backup)
+              common.write_text(updated, encoding='utf-8', newline='\n')
+              print('Patched icacls output decoding to the native Windows OEM code page')
+          elif source.count(new) == 1:
+              print('Windows icacls output decoding is already patched')
+          else:
+              raise RuntimeError('Unexpected Chromium ACL helper; refusing to patch a different call')
+
       - name: Generate GN config and build FFmpeg
         run: |
           node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target third_party/ffmpeg:ffmpeg
