@@ -19,6 +19,7 @@ env:
   ELECTRON_REVISION: v44.4.4
   BUILD_ROOT: 'C:\electron-build'
   DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+  ELECTRON_DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
   CI: '1'
   vs2022_install: 'C:\BuildTools'
   WINDOWSSDKDIR: 'C:\Program Files (x86)\Windows Kits\10'
@@ -104,10 +105,38 @@ jobs:
           node "%BUILD_TOOLS_WRAPPER%" use ac3-fast || node "%BUILD_TOOLS_WRAPPER%" init ac3-fast --root "%BUILD_ROOT%" --import testing --out Release --target-cpu x64 --remote-build none --fork ARST113/electron --use-https
           node "%BUILD_TOOLS_WRAPPER%" show current
 
+      - name: Verify local toolchain and preserved downloads
+        shell: powershell
+        run: |
+          $overridesJson = & node $env:BUILD_TOOLS_WRAPPER show env --json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect build-tools environment' }
+          $overrides = ($overridesJson -join "`n") | ConvertFrom-Json
+          $effectiveToolchain = $env:DEPOT_TOOLS_WIN_TOOLCHAIN
+          if ($overrides.PSObject.Properties.Name -contains 'DEPOT_TOOLS_WIN_TOOLCHAIN') {
+            $effectiveToolchain = $overrides.DEPOT_TOOLS_WIN_TOOLCHAIN
+          }
+          Write-Host "Effective DEPOT_TOOLS_WIN_TOOLCHAIN=$effectiveToolchain"
+          if ($effectiveToolchain -ne '0') { throw 'build-tools is overriding the local Windows toolchain' }
+          $paths = @(
+            $env:BUILD_ROOT,
+            (Join-Path $env:USERPROFILE '.git_cache'),
+            (Join-Path $env:USERPROFILE '.electron_build_tools'),
+            'C:\electron-go-cache'
+          )
+          foreach ($path in $paths) {
+            if (Test-Path -LiteralPath $path) {
+              $files = Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+                Measure-Object -Property Length -Sum
+              Write-Host ("Preserved {0}: {1:N2} GiB, {2} files" -f $path, ($files.Sum / 1GB), $files.Count)
+            }
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
       - name: Sync Electron and Chromium sources
         run: |
           echo ===== Sync started %DATE% %TIME% =====
           node "%BUILD_TOOLS_WRAPPER%" sync --revision %ELECTRON_REVISION%
+          if errorlevel 1 exit /b %errorlevel%
           echo ===== Sync finished %DATE% %TIME% =====
 
       - name: Show disk after sync
@@ -140,9 +169,7 @@ jobs:
             'enable_platform_ac3_eac3_audio\s*=\s*true',
             'proprietary_codecs\s*=\s*true',
             'ffmpeg_branding\s*=\s*"Chrome"',
-            'symbol_level\s*=\s*0',
-            'angle_enable_vulkan\s*=\s*false',
-            'dawn_enable_vulkan\s*=\s*false'
+            'symbol_level\s*=\s*0'
           )
 
           foreach ($pattern in $required) {
@@ -155,6 +182,7 @@ jobs:
         run: |
           echo ===== Electron build started %DATE% %TIME% =====
           node "%BUILD_TOOLS_WRAPPER%" build --no-remote --target electron:electron_dist_zip
+          if errorlevel 1 exit /b %errorlevel%
           echo ===== Electron build finished %DATE% %TIME% =====
 
       - name: Show disk after build
