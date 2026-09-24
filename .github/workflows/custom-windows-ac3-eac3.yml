@@ -21,6 +21,7 @@ env:
   DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
   ELECTRON_DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
   CI: '1'
+  PYTHONUTF8: '1'
   vs2022_install: 'C:\BuildTools'
   WINDOWSSDKDIR: 'C:\Program Files (x86)\Windows Kits\10'
   GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0'
@@ -168,6 +169,40 @@ jobs:
             }
           }
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Repair legacy Git cache path encoding
+        shell: python {0}
+        run: |
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          
+          checkout = Path(os.environ['BUILD_ROOT']) / 'src' / 'electron'
+          alternates = checkout / '.git' / 'objects' / 'info' / 'alternates'
+          if alternates.exists():
+              paths = []
+              changed = False
+              for raw_line in alternates.read_bytes().splitlines():
+                  try:
+                      path = raw_line.decode('utf-8')
+                  except UnicodeDecodeError:
+                      path = raw_line.decode('cp1251')
+                      changed = True
+                  if path and not Path(path).is_dir():
+                      raise RuntimeError(f'Git cache objects directory is missing: {path}')
+                  paths.append(path)
+              if changed:
+                  backup = alternates.with_name('alternates.before-utf8')
+                  if not backup.exists():
+                      shutil.copyfile(alternates, backup)
+                  alternates.write_text('\n'.join(paths) + '\n', encoding='utf-8', newline='\n')
+                  print(f'Repaired legacy cache path encoding; original saved to {backup}')
+              else:
+                  print('Git cache paths already use UTF-8')
+          if (checkout / '.git').exists():
+              subprocess.run(['git', '-C', str(checkout), 'cat-file', '-e', 'HEAD^{commit}'], check=True)
+              print('Existing Electron checkout and cached HEAD are readable')
 
       - name: Sync Electron and Chromium sources
         run: |
