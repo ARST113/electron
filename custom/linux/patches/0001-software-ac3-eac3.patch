@@ -1,0 +1,50 @@
+diff --git a/media/ffmpeg/ffmpeg_common.cc b/media/ffmpeg/ffmpeg_common.cc
+--- a/media/ffmpeg/ffmpeg_common.cc
++++ b/media/ffmpeg/ffmpeg_common.cc
+@@ -185,6 +185,12 @@ AVCodecID AudioCodecToCodecID(AudioCodec audio_codec,
+   switch (audio_codec) {
+     case AudioCodec::kAAC:
+       return AV_CODEC_ID_AAC;
++#if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
++    case AudioCodec::kAC3:
++      return AV_CODEC_ID_AC3;
++    case AudioCodec::kEAC3:
++      return AV_CODEC_ID_EAC3;
++#endif
+     case AudioCodec::kALAC:
+       return AV_CODEC_ID_ALAC;
+     case AudioCodec::kMP3:
+@@ -1118,7 +1124,9 @@ int32_t HashCodecName(const char* codec_name) {
+ }
+ 
+ const char* GetAllowedAudioDecoders() {
+-#if BUILDFLAG(USE_PROPRIETARY_CODECS)
++#if BUILDFLAG(USE_PROPRIETARY_CODECS) && BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
++#define EXTRA_CODECS ",aac,ac3,eac3"
++#elif BUILDFLAG(USE_PROPRIETARY_CODECS)
+ #define EXTRA_CODECS ",aac"
+ #else
+ #define EXTRA_CODECS
+diff --git a/media/ffmpeg/scripts/build_ffmpeg.py b/media/ffmpeg/scripts/build_ffmpeg.py
+--- a/media/ffmpeg/scripts/build_ffmpeg.py
++++ b/media/ffmpeg/scripts/build_ffmpeg.py
+@@ -990,15 +990,15 @@ def ConfigureAndBuild(target_arch, target_os, host_os, host_arch,
+ 
+     # Google Chrome specific configuration.
+     configure_flags['Chrome'].extend([
+-        '--enable-decoder=aac,h264',
++        '--enable-decoder=aac,h264,ac3,eac3',
+         '--enable-demuxer=aac',
+-        '--enable-parser=aac,h264',
++        '--enable-parser=aac,h264,ac3',
+     ])
+ 
+     configure_flags['ChromeAndroid'].extend([
+         '--enable-demuxer=aac',
+-        '--enable-parser=aac',
+-        '--enable-decoder=aac',
++        '--enable-parser=aac,ac3',
++        '--enable-decoder=aac,ac3,eac3',
+     ])
+ 
+     def do_build_ffmpeg(branding, configure_flags):

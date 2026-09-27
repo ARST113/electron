@@ -1,0 +1,7 @@
+{
+  "electron_version": "44.4.4",
+  "electron_revision": "b2004823e907e9a8dd4aa2e7c078963000c04e2e",
+  "chromium_version": "152.0.7977.130",
+  "chromium_revision": "2c592105bbcd9490a9894df48d0fe59b2c512651",
+  "depot_tools_revision": "56b8271b3f10e046bffac2cfc44b2f81162cd97e"
+}

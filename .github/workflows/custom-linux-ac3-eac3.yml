@@ -1,0 +1,62 @@
+name: Lampa Linux x86_64 RPM and AC3-EAC3 runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, linux/ac3-eac3]
+    paths:
+      - .github/workflows/custom-linux-ac3-eac3.yml
+      - custom/linux/**
+
+permissions:
+  contents: write
+
+concurrency:
+  group: custom-electron-linux-ac3-eac3
+  cancel-in-progress: false
+
+jobs:
+  linux-x64:
+    if: github.repository == 'ARST113/electron' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/linux/ac3-eac3')
+    runs-on: [self-hosted, Linux, X64, lampa-linux]
+    timeout-minutes: 1440
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout build controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - name: Compile pinned Electron with software AC3-EAC3
+        run: |
+          mkdir -p artifacts/linux
+          bash custom/linux/build.sh 2>&1 | tee artifacts/linux/build.log
+      - name: Verify software decoding into PCM
+        run: bash custom/linux/verify.sh
+      - name: Checkout Lampa Desktop with Linux subtitle-tool paths
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ARST113/lampa-desktop
+          ref: 1a5ac023e7c5d9ecc81278388ea736a27536170d
+          path: lampa-app
+          persist-credentials: false
+      - name: Package the x86_64 RPM with the verified runtime
+        run: bash custom/linux/package.sh "$PWD/lampa-app" 2>&1 | tee artifacts/linux/package.log
+      - name: Publish reusable runtime and RPM
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 custom/linux/publish.py
+      - name: Upload runtime, RPM and build evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-linux-x64-ac3-eac3-${{ github.run_number }}
+          path: artifacts/linux/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
