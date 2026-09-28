@@ -70,6 +70,11 @@ fi
 cmp "$repo/custom/linux/pins.json" "$base/.synced"
 gclient revinfo > "$artifact/dependencies.txt"
 cd "$base/src"
+# gclient's GCS migration can remove Electron's hook-installed sysroot while
+# reading dependency metadata. Restore the pinned Electron image afterwards.
+python3 build/linux/sysroot_scripts/install-sysroot.py \
+  --sysroots-json-path=electron/script/sysroots.json --arch=x64 2>&1 | tee "$artifact/sysroot.log"
+test -f build/linux/debian_bullseye_amd64-sysroot/usr/include/stdio.h
 export PATH="$base/src/third_party/llvm-build/Release+Asserts/bin:$base/src/buildtools/linux64:$base/src/third_party/ninja:$PATH"
 for patch in "$repo"/custom/linux/patches/*.patch; do
   if git apply --reverse --check "$patch" 2>/dev/null; then
