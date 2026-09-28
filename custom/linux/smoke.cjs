@@ -4,8 +4,6 @@ const path = require('node:path');
 
 const [fixtures, output] = process.argv.slice(2);
 app.commandLine.appendSwitch('disable-gpu');
-// Isolated CI probe: only inline code and locally generated audio are loaded.
-app.commandLine.appendSwitch('no-sandbox');
 app.whenReady().then(async () => {
   if (process.versions.electron !== '44.4.4') throw new Error('Wrong Electron version');
   const window = new BrowserWindow({ show: false, webPreferences: { backgroundThrottling: false } });

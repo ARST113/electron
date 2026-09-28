@@ -16,4 +16,6 @@ for codec in ac3 eac3; do
   ffmpeg -hide_banner -loglevel error -y -f lavfi -i sine=frequency=440:sample_rate=48000 \
     -t 1 -ac 2 -c:a "$codec" -b:a 192k "$artifact/fixtures/$codec.mp4"
 done
-timeout 120 xvfb-run -a "$runtime/electron" "$repo/custom/linux/smoke.cjs" "$artifact/fixtures" "$artifact/codec-smoke.json"
+# Only this local CI probe runs without sandboxing. Chromium initializes its
+# zygote before smoke.cjs loads, so the flag must be on the process command line.
+timeout 120 xvfb-run -a "$runtime/electron" "$repo/custom/linux/smoke.cjs" "$artifact/fixtures" "$artifact/codec-smoke.json" --no-sandbox
