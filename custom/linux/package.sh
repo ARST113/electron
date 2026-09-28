@@ -7,6 +7,10 @@ artifact="$repo/artifacts/linux"
 runtime="$repo/artifacts/runtime-linux-x64"
 export ELECTRON_SKIP_BINARY_DOWNLOAD=1
 cd "$app"
+# The app is nested under Electron's controller checkout. Isolate Yarn config
+# so the parent's yarnPath cannot replace the app's pinned Yarn 4.9.4.
+export YARN_RC_FILENAME=.yarnrc-lampa-ci.yml
+git show HEAD:.yarnrc.yml > "$YARN_RC_FILENAME"
 # Corepack is local to the persistent build directory; no global Node changes.
 tools=/build/lampa-ci/electron-44-linux/package-tools
 if [[ ! -f "$tools/node_modules/corepack/dist/yarn.js" ]]; then
