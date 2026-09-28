@@ -46,7 +46,7 @@ artifact,app=map(pathlib.Path,sys.argv[1:3])
 manifest=json.loads((artifact/sys.argv[3]).read_text())
 binary=app/'dist/linux-unpacked/libffmpeg.so'
 with binary.open('rb') as source:
-assert hashlib.file_digest(source,'sha256').hexdigest()==manifest['ffmpegSha256'], 'Packager replaced libffmpeg.so'
+    assert hashlib.file_digest(source,'sha256').hexdigest()==manifest['ffmpegSha256'], 'Packager replaced libffmpeg.so'
 assert (app/'dist/linux-unpacked/resources/app.asar').is_file()
 PY
 shopt -s nullglob
