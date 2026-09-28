@@ -84,6 +84,13 @@ sysroot_arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py \
   --sysroots-json-path=electron/script/sysroots.json --arch="$cpu" 2>&1 | tee "$artifact/sysroot.log"
 test -f "build/linux/debian_bullseye_${sysroot_arch}-sysroot/usr/include/stdio.h"
+if [[ "$cpu" == arm64 ]]; then
+  # Cross-compiling ARM64 still executes x64 host tools, so GN needs both
+  # target and host sysroots after gclient's GCS cleanup.
+  python3 build/linux/sysroot_scripts/install-sysroot.py \
+    --sysroots-json-path=electron/script/sysroots.json --arch=x64 2>&1 | tee -a "$artifact/sysroot.log"
+  test -f build/linux/debian_bullseye_amd64-sysroot/usr/include/stdio.h
+fi
 export PATH="$base/src/third_party/llvm-build/Release+Asserts/bin:$base/src/buildtools/linux64:$base/src/third_party/ninja:$PATH"
 for patch in "$repo"/custom/linux/patches/*.patch; do
   if git apply --reverse --check "$patch" 2>/dev/null; then
