@@ -40,14 +40,19 @@ const config = { ...pkg.build,
 fs.writeFileSync('electron-builder-linux.json', JSON.stringify(config, null, 2));
 JS
 LINUX_BUILDER_ARCH="$builder_arch" "${yarn[@]}" exec electron-builder --linux rpm --"$builder_arch" --publish=never --config electron-builder-linux.json
-python3 - "$artifact" "$app" "$manifest_name" <<'PY'
+unpacked_dir="$app/dist/linux-${cpu}-unpacked"
+if [[ "$cpu" == x64 ]]; then
+  unpacked_dir="$app/dist/linux-unpacked"
+fi
+python3 - "$artifact" "$manifest_name" "$unpacked_dir" <<'PY'
 import hashlib,json,pathlib,sys
-artifact,app=map(pathlib.Path,sys.argv[1:3])
-manifest=json.loads((artifact/sys.argv[3]).read_text())
-binary=app/'dist/linux-unpacked/libffmpeg.so'
+artifact=pathlib.Path(sys.argv[1])
+manifest=json.loads((artifact/sys.argv[2]).read_text())
+unpacked=pathlib.Path(sys.argv[3])
+binary=unpacked/'libffmpeg.so'
 with binary.open('rb') as source:
     assert hashlib.file_digest(source,'sha256').hexdigest()==manifest['ffmpegSha256'], 'Packager replaced libffmpeg.so'
-assert (app/'dist/linux-unpacked/resources/app.asar').is_file()
+assert (unpacked/'resources/app.asar').is_file()
 PY
 shopt -s nullglob
 rpms=(dist/*.rpm)
