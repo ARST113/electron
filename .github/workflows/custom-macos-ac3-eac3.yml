@@ -1,0 +1,250 @@
+name: Custom Electron macOS x64 AC3-EAC3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-electron-macos-x64-ac3-eac3
+  cancel-in-progress: false
+
+env:
+  ELECTRON_REVISION: v44.4.4
+  BUILD_PROFILE: ac3-macos-x64
+  CI: '1'
+  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0'
+
+jobs:
+  build-macos-x64:
+    name: macOS x64 AC3-EAC3 self-hosted
+    runs-on: [self-hosted, macOS, X64]
+    timeout-minutes: 1440
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Verify macOS build machine
+        run: |
+          set -euo pipefail
+
+          echo "===== macOS ====="
+          sw_vers
+          echo
+          echo "===== CPU ====="
+          uname -a
+          test "$(uname -m)" = "x86_64" || {
+            echo "This workflow expects an x86_64 macOS runner."
+            exit 1
+          }
+          sysctl -n hw.ncpu
+          sysctl -n hw.memsize
+          echo
+          echo "===== Disk ====="
+          df -h "$HOME"
+
+          echo
+          echo "===== Xcode ====="
+          test -x /usr/bin/xcodebuild || {
+            echo "Full Xcode is required."
+            exit 1
+          }
+          /usr/bin/xcodebuild -version
+          xcode-select -p
+          xcrun clang --version
+
+          echo
+          echo "===== Runtime tools ====="
+          git --version
+          python3 --version
+          node --version
+          npm --version
+
+          python3 - <<'PY'
+          import sys
+          if sys.version_info < (3, 9):
+              raise SystemExit(f"Python >= 3.9 required, found {sys.version.split()[0]}")
+          print("Python version OK:", sys.version.split()[0])
+          PY
+
+          node - <<'NODE'
+          const [major, minor] = process.versions.node.split('.').map(Number);
+          if (major < 22 || (major === 22 && minor < 18)) {
+            throw new Error('Node.js >= 22.18.0 is required; found ' + process.versions.node);
+          }
+          console.log('Node.js version OK:', process.versions.node);
+          NODE
+
+          BUILD_ROOT="$HOME/electron-build"
+          BUILD_TOOLS_PREFIX="$HOME/.electron-build-tools-npm"
+          ELECTRON_TEMP="$HOME/electron-temp"
+
+          mkdir -p "$BUILD_ROOT" "$BUILD_TOOLS_PREFIX" "$ELECTRON_TEMP"
+
+          echo "BUILD_ROOT=$BUILD_ROOT" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS_PREFIX=$BUILD_TOOLS_PREFIX" >> "$GITHUB_ENV"
+          echo "TMPDIR=$ELECTRON_TEMP/" >> "$GITHUB_ENV"
+
+          FREE_KB="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          FREE_GB="$((FREE_KB / 1024 / 1024))"
+          echo "Free space: $FREE_GB GiB"
+          if [ "$FREE_GB" -lt 160 ]; then
+            echo "At least 160 GiB free is required before starting the Electron/Chromium sync."
+            exit 1
+          fi
+          if [ "$FREE_GB" -lt 220 ]; then
+            echo "::warning::Less than 220 GiB free. The build may run out of disk space."
+          fi
+
+      - name: Configure Git for Chromium checkout
+        run: |
+          set -euo pipefail
+          git config --global core.filemode true
+          git config --global core.autocrlf input
+          git config --global branch.autosetuprebase always
+          git config --global core.preloadindex true
+
+      - name: Install Electron build tools in user directory
+        run: |
+          set -euo pipefail
+
+          npm install             --prefix "$BUILD_TOOLS_PREFIX"             @electron/build-tools@2.1.5             --no-fund             --no-audit
+
+          BUILD_TOOLS_WRAPPER="$BUILD_TOOLS_PREFIX/node_modules/@electron/build-tools/run.js"
+          test -f "$BUILD_TOOLS_WRAPPER" || {
+            echo "Could not find @electron/build-tools/run.js at $BUILD_TOOLS_WRAPPER"
+            exit 1
+          }
+
+          echo "BUILD_TOOLS_WRAPPER=$BUILD_TOOLS_WRAPPER" >> "$GITHUB_ENV"
+          node "$BUILD_TOOLS_WRAPPER" --help >/dev/null
+
+      - name: Select or initialize persistent Electron build
+        run: |
+          set -euo pipefail
+
+          node "$BUILD_TOOLS_WRAPPER" use "$BUILD_PROFILE" ||             node "$BUILD_TOOLS_WRAPPER" init "$BUILD_PROFILE"               --root "$BUILD_ROOT"               --import testing               --out Release               --target-cpu x64               --remote-build none               --fork ARST113/electron               --use-https
+
+          node "$BUILD_TOOLS_WRAPPER" show current
+
+      - name: Show persistent checkout state
+        run: |
+          set -euo pipefail
+
+          echo "===== Build root ====="
+          du -sh "$BUILD_ROOT" 2>/dev/null || true
+
+          echo "===== Git cache ====="
+          du -sh "$HOME/.git_cache" 2>/dev/null || true
+
+          echo "===== Existing Electron checkout ====="
+          if [ -d "$BUILD_ROOT/src/electron/.git" ]; then
+            git -C "$BUILD_ROOT/src/electron" rev-parse --short HEAD
+            git -C "$BUILD_ROOT/src/electron" remote -v
+          else
+            echo "No existing checkout yet."
+          fi
+
+          df -h "$HOME"
+
+      - name: Sync Electron and Chromium sources
+        run: |
+          set -euo pipefail
+
+          echo "===== Sync started: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+          node "$BUILD_TOOLS_WRAPPER" sync --revision "$ELECTRON_REVISION"
+          echo "===== Sync finished: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+
+          echo "===== Electron revision ====="
+          git -C "$BUILD_ROOT/src/electron" rev-parse HEAD
+          git -C "$BUILD_ROOT/src/electron" describe --tags --exact-match HEAD || true
+          git -C "$BUILD_ROOT/src/electron" remote -v
+
+      - name: Show disk after sync
+        run: |
+          set -euo pipefail
+          du -sh "$BUILD_ROOT" 2>/dev/null || true
+          du -sh "$HOME/.git_cache" 2>/dev/null || true
+          df -h "$HOME"
+
+      - name: Generate GN config and build FFmpeg first
+        run: |
+          set -euo pipefail
+          node "$BUILD_TOOLS_WRAPPER" build --no-remote --target third_party/ffmpeg:ffmpeg
+
+      - name: Verify AC3-EAC3 build flags
+        run: |
+          set -euo pipefail
+
+          ARGS="$BUILD_ROOT/src/out/Release/args.gn"
+          test -f "$ARGS" || {
+            echo "GN args file not found: $ARGS"
+            exit 1
+          }
+
+          echo "===== Effective relevant GN args ====="
+          grep -E 'enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding|override_electron_version|symbol_level|target_cpu|mac_sdk_path' "$ARGS" || true
+
+          grep -Eq 'enable_platform_ac3_eac3_audio[[:space:]]*=[[:space:]]*true' "$ARGS"
+          grep -Eq 'proprietary_codecs[[:space:]]*=[[:space:]]*true' "$ARGS"
+          grep -Eq 'ffmpeg_branding[[:space:]]*=[[:space:]]*"Chrome"' "$ARGS"
+          grep -Eq 'symbol_level[[:space:]]*=[[:space:]]*0' "$ARGS"
+          grep -Eq 'target_cpu[[:space:]]*=[[:space:]]*"x64"' "$ARGS"
+
+      - name: Build Electron distribution
+        run: |
+          set -euo pipefail
+          echo "===== Electron build started: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+          node "$BUILD_TOOLS_WRAPPER" build --no-remote --target electron:electron_dist_zip
+          echo "===== Electron build finished: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+
+      - name: Inspect build output
+        run: |
+          set -euo pipefail
+
+          OUT="$BUILD_ROOT/src/out/Release"
+          SOURCE="$OUT/dist.zip"
+
+          test -f "$SOURCE" || {
+            echo "Electron dist.zip was not produced."
+            find "$OUT" -maxdepth 2 -type f -name '*.zip' -print || true
+            exit 1
+          }
+
+          ls -lh "$SOURCE"
+          unzip -l "$SOURCE" | head -n 80
+
+          if [ -d "$OUT/Electron.app" ]; then
+            file "$OUT/Electron.app/Contents/MacOS/Electron" || true
+          fi
+
+      - name: Prepare artifact
+        run: |
+          set -euo pipefail
+
+          SOURCE="$BUILD_ROOT/src/out/Release/dist.zip"
+          DEST="$GITHUB_WORKSPACE/electron-v44.4.4-darwin-x64-ac3-eac3.zip"
+
+          cp -f "$SOURCE" "$DEST"
+          ls -lh "$DEST"
+          shasum -a 256 "$DEST" | tee "$DEST.sha256"
+
+      - name: Show disk after build
+        if: always()
+        run: |
+          du -sh "$BUILD_ROOT" 2>/dev/null || true
+          du -sh "$HOME/.git_cache" 2>/dev/null || true
+          df -h "$HOME"
+
+      - name: Upload custom Electron
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-v44.4.4-darwin-x64-ac3-eac3
+          path: |
+            electron-v44.4.4-darwin-x64-ac3-eac3.zip
+            electron-v44.4.4-darwin-x64-ac3-eac3.zip.sha256
+          compression-level: 0
+          retention-days: 14
