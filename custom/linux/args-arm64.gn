@@ -1,0 +1,19 @@
+import("//electron/build/args/testing.gn")
+target_os = "linux"
+target_cpu = "arm64"
+override_electron_version = "44.4.4"
+is_debug = false
+is_component_build = false
+is_component_ffmpeg = true
+is_official_build = false
+dcheck_always_on = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+clang_use_chrome_plugins = false
+use_thin_lto = false
+chrome_pgo_phase = 0
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+enable_platform_ac3_eac3_audio = true
+enable_passthrough_audio_codecs = false

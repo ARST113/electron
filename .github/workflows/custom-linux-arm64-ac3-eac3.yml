@@ -1,0 +1,68 @@
+name: Lampa Linux ARM64 RPM and AC3-EAC3 runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [linux/arm64-ac3-eac3]
+    paths:
+      - .github/workflows/custom-linux-arm64-ac3-eac3.yml
+      - custom/linux/**
+
+permissions:
+  contents: write
+
+concurrency:
+  group: custom-electron-linux-arm64-ac3-eac3
+  cancel-in-progress: false
+
+jobs:
+  linux-arm64:
+    if: github.repository == 'ARST113/electron' && github.ref == 'refs/heads/linux/arm64-ac3-eac3'
+    runs-on: [self-hosted, Linux, X64, lampa-linux]
+    timeout-minutes: 1440
+    defaults:
+      run:
+        shell: bash
+    env:
+      LINUX_TARGET_CPU: arm64
+      LINUX_ARTIFACT_DIR: artifacts/linux-arm64
+      # Reuse the pinned Chromium/Electron checkout; the x64 output directory
+      # remains separate and the shared build lock prevents overlap.
+      LINUX_BASE: /build/lampa-ci/electron-44-linux
+    steps:
+      - name: Checkout ARM64 build controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - name: Compile pinned Electron ARM64 with software AC3-EAC3
+        run: |
+          mkdir -p "$LINUX_ARTIFACT_DIR"
+          bash custom/linux/build.sh 2>&1 | tee "$LINUX_ARTIFACT_DIR/build.log"
+      - name: Verify ARM64 archive and software FFmpeg configuration
+        run: bash custom/linux/verify-arm64.sh
+      - name: Checkout Lampa Desktop with Linux subtitle-tool paths
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ARST113/lampa-desktop
+          ref: 1a5ac023e7c5d9ecc81278388ea736a27536170d
+          path: lampa-app
+          persist-credentials: false
+      - name: Package the ARM64 RPM with the verified runtime
+        run: bash custom/linux/package.sh "$PWD/lampa-app" 2>&1 | tee "$LINUX_ARTIFACT_DIR/package.log"
+      - name: Publish reusable ARM64 runtime and RPM
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 custom/linux/publish.py
+      - name: Upload ARM64 runtime, RPM and build evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-linux-arm64-ac3-eac3-${{ github.run_number }}
+          path: artifacts/linux-arm64/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error

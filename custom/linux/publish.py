@@ -9,13 +9,15 @@ import urllib.request
 import zipfile
 
 root = Path(__file__).resolve().parents[2]
-artifact = root / 'artifacts/linux'
+cpu = os.environ.get('LINUX_TARGET_CPU', 'x64')
+assert cpu in ('x64', 'arm64')
+artifact = root / os.environ.get('LINUX_ARTIFACT_DIR', f'artifacts/linux')
 repository = os.environ['GITHUB_REPOSITORY']
 assert repository == 'ARST113/electron'
 run = os.environ['GITHUB_RUN_NUMBER']
 attempt = os.environ['GITHUB_RUN_ATTEMPT']
-tag = f'v44.4.4-linux-x64-ac3-eac3-r{run}a{attempt}'
-manifest_path = artifact / 'electron-runtime-linux-x64.json'
+tag = f'v44.4.4-linux-{cpu}-ac3-eac3-r{run}a{attempt}'
+manifest_path = artifact / f'electron-runtime-linux-{cpu}.json'
 manifest = json.loads(manifest_path.read_text())
 manifest.update(repository=repository, tag=tag,
                 sourceRun=f'https://github.com/{repository}/actions/runs/{os.environ["GITHUB_RUN_ID"]}')
@@ -46,16 +48,20 @@ def api(path, data, method='POST'):
     with urllib.request.urlopen(request, timeout=120) as response:
         return json.load(response)
 
+probe_text = ('The CI probe decoded generated AC3 and EAC3 samples into non-silent PCM using Electron. '
+              if cpu == 'x64' else
+              'The ARM64 archive and FFmpeg configuration were verified on the x86_64 builder; '
+              'ARM64 runtime execution is not available on this host. ')
 release = api('/releases', {
     'tag_name': tag, 'target_commitish': os.environ['GITHUB_SHA'],
-    'name': 'Lampa Linux x86_64 RPM + Electron 44.4.4 AC3/EAC3',
+    'name': f'Lampa Linux {cpu} RPM + Electron 44.4.4 AC3/EAC3',
     'draft': True, 'prerelease': True, 'make_latest': 'false',
-    'body': 'Linux x86_64 runtime with built-in FFmpeg AC3/EAC3 software decoders, plus Lampa Desktop RPM.\n\n'
-            'The runtime ZIP can be reused for app-only rebuilds. Checksums and pinned source revisions are attached.\n\n'
-            'The CI probe decoded generated AC3 and EAC3 samples into non-silent PCM using Electron. '
+    'body': (f'Linux {cpu} runtime with built-in FFmpeg AC3/EAC3 software decoders, plus Lampa Desktop RPM.\n\n'
+            'The runtime ZIP can be reused for app-only rebuilds. Checksums and pinned source revisions are attached.\n\n' +
+            probe_text +
             'Interactive playback and a physical remote remain separate device checks. '
             'Optional external subtitle extraction on Linux uses ffmpeg/ffprobe from PATH. '
-            'Install and update this initial RPM manually; Linux auto-update metadata is not yet published.\n\n' + manifest['sourceRun'],
+            'Install and update this initial RPM manually; Linux auto-update metadata is not yet published.\n\n' + manifest['sourceRun']),
 })
 for file in assets:
     url = f'https://uploads.github.com/repos/{repository}/releases/{release["id"]}/assets?name=' + urllib.parse.quote(file.name)
@@ -67,4 +73,4 @@ for file in assets:
 api(f'/releases/{release["id"]}', {'draft': False, 'make_latest': 'false'}, 'PATCH')
 print(release['html_url'])
 with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-    summary.write(f'Linux x86_64 runtime and RPM: {release["html_url"]}\n')
+    summary.write(f'Linux {cpu} runtime and RPM: {release["html_url"]}\n')

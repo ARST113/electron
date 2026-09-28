@@ -3,8 +3,17 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 app=${1:?Path to the pinned Lampa Desktop checkout is required}
 app=$(cd "$app" && pwd)
-artifact="$repo/artifacts/linux"
-runtime="$repo/artifacts/runtime-linux-x64"
+cpu=${LINUX_TARGET_CPU:-x64}
+case "$cpu" in
+  x64) builder_arch=x64; rpm_arch=x86_64 ;;
+  arm64) builder_arch=arm64; rpm_arch=aarch64 ;;
+  *) echo "Unsupported Linux target CPU: $cpu" >&2; exit 2 ;;
+esac
+export LINUX_BUILDER_ARCH="$builder_arch"
+artifact_dir=${LINUX_ARTIFACT_DIR:-artifacts/linux}
+artifact="$repo/$artifact_dir"
+runtime="$repo/artifacts/runtime-linux-$cpu"
+manifest_name="electron-runtime-linux-$cpu.json"
 export ELECTRON_SKIP_BINARY_DOWNLOAD=1
 cd "$app"
 # The app is nested under Electron's controller checkout. Isolate Yarn config
@@ -26,24 +35,24 @@ if (pkg.devDependencies.electron !== '44.4.4') throw new Error('Lampa/Electron v
 const config = { ...pkg.build,
   electronDist: process.argv[2], electronVersion: '44.4.4', extraResources: [],
   artifactName: 'lampa-${arch}-${version}-linux-ac3.${ext}',
-  linux: { ...pkg.build.linux, target: [{ target: 'rpm', arch: ['x64'] }] }
+  linux: { ...pkg.build.linux, target: [{ target: 'rpm', arch: [process.env.LINUX_BUILDER_ARCH] }] }
 };
 fs.writeFileSync('electron-builder-linux.json', JSON.stringify(config, null, 2));
 JS
-"${yarn[@]}" exec electron-builder --linux rpm --x64 --publish=never --config electron-builder-linux.json
-python3 - "$artifact" "$app" <<'PY'
+LINUX_BUILDER_ARCH="$builder_arch" "${yarn[@]}" exec electron-builder --linux rpm --"$builder_arch" --publish=never --config electron-builder-linux.json
+python3 - "$artifact" "$app" "$manifest_name" <<'PY'
 import hashlib,json,pathlib,sys
-artifact,app=map(pathlib.Path,sys.argv[1:])
-manifest=json.loads((artifact/'electron-runtime-linux-x64.json').read_text())
+artifact,app=map(pathlib.Path,sys.argv[1:3])
+manifest=json.loads((artifact/sys.argv[3]).read_text())
 binary=app/'dist/linux-unpacked/libffmpeg.so'
 with binary.open('rb') as source:
- assert hashlib.file_digest(source,'sha256').hexdigest()==manifest['ffmpegSha256'], 'Packager replaced libffmpeg.so'
+assert hashlib.file_digest(source,'sha256').hexdigest()==manifest['ffmpegSha256'], 'Packager replaced libffmpeg.so'
 assert (app/'dist/linux-unpacked/resources/app.asar').is_file()
 PY
 shopt -s nullglob
 rpms=(dist/*.rpm)
-[[ ${#rpms[@]} == 1 ]] || { echo 'Expected one x86_64 RPM'; exit 1; }
-[[ $(rpm -qp --qf '%{ARCH}' "${rpms[0]}") == x86_64 ]]
+[[ ${#rpms[@]} == 1 ]] || { echo "Expected one $rpm_arch RPM"; exit 1; }
+[[ $(rpm -qp --qf '%{ARCH}' "${rpms[0]}") == "$rpm_arch" ]]
 rpm -qpl "${rpms[0]}" > "$artifact/rpm-files.txt"
 rpm -qp --requires "${rpms[0]}" > "$artifact/rpm-requires.txt"
 cp "${rpms[0]}" "$artifact/"

@@ -34,6 +34,12 @@ The RPM does not contain Windows subtitle executables. Optional FFmpeg subtitle
 extraction/probing uses native `ffmpeg` and `ffprobe` from PATH on Linux. The
 built-in browser audio decoders do not depend on these command-line tools.
 
+The ARM64 workflow reuses the completed pinned source checkout on the x86_64 VPS
+and builds a separate `out/Lampa_linux_arm64_ac3` directory. It verifies the
+AArch64 ELF, FFmpeg decoder configuration and RPM metadata. The ARM64 Electron
+binary is not executed on this x86_64 worker; a device or ARM64 host is needed
+for a runtime playback check.
+
 This first RPM is installed and updated manually from GitHub Releases. Linux
 update-feed metadata is not published yet; the existing application updater
 does not deliver these Linux releases automatically.
