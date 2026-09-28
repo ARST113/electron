@@ -93,7 +93,21 @@ for patch in "$repo"/custom/linux/patches/*.patch; do
     git apply "$patch"
   fi
 done
-identity=$(cat "$repo/custom/linux/pins.json" "$repo"/custom/linux/patches/*.patch "$repo/custom/linux/build.sh" "$args_file" | sha256sum | cut -d' ' -f1)
+if [[ "$cpu" == arm64 ]]; then
+  for patch in "$repo"/custom/linux/ffmpeg-patches/*.patch; do
+    if git -C third_party/ffmpeg apply --reverse --check "$patch" 2>/dev/null; then
+      echo "Already applied FFmpeg patch: $(basename "$patch")"
+    else
+      git -C third_party/ffmpeg apply --check "$patch"
+      git -C third_party/ffmpeg apply "$patch"
+    fi
+  done
+fi
+identity_inputs=("$repo/custom/linux/pins.json" "$repo"/custom/linux/patches/*.patch "$repo/custom/linux/build.sh" "$args_file")
+if [[ "$cpu" == arm64 ]]; then
+  identity_inputs+=("$repo"/custom/linux/ffmpeg-patches/*.patch)
+fi
+identity=$(cat "${identity_inputs[@]}" | sha256sum | cut -d' ' -f1)
 if [[ ! -f "$base/.ffmpeg-linux-$cpu" || $(cat "$base/.ffmpeg-linux-$cpu") != "$identity" ]]; then
   python3 media/ffmpeg/scripts/build_ffmpeg.py linux "$cpu" --branding=Chrome 2>&1 | tee "$artifact/ffmpeg-build.log"
   (cd third_party/ffmpeg && bash chromium/scripts/copy_config.sh) > "$artifact/ffmpeg-configs.log"

@@ -1,0 +1,31 @@
+--- a/libavcodec/aarch64/Makefile
++++ b/libavcodec/aarch64/Makefile
+@@ -1,5 +1,7 @@
+ # subsystems
++ifeq ($(CONFIG_GPL),yes)
+ OBJS-$(CONFIG_AC3DSP)                   += aarch64/ac3dsp_init_aarch64.o
++endif
+ OBJS-$(CONFIG_FDCTDSP)                  += aarch64/fdctdsp_init_aarch64.o
+ OBJS-$(CONFIG_FMTCONVERT)               += aarch64/fmtconvert_init.o
+ OBJS-$(CONFIG_H264CHROMA)               += aarch64/h264chroma_init_aarch64.o
+@@ -43,7 +45,9 @@
+ # subsystems
+ NEON-OBJS-$(CONFIG_AAC_DECODER)         += aarch64/sbrdsp_neon.o
+ NEON-OBJS-$(CONFIG_AAC_ENCODER)         += aarch64/aacencdsp_neon.o
++ifeq ($(CONFIG_GPL),yes)
+ NEON-OBJS-$(CONFIG_AC3DSP)              += aarch64/ac3dsp_neon.o
++endif
+ NEON-OBJS-$(CONFIG_FDCTDSP)             += aarch64/fdctdsp_neon.o
+ NEON-OBJS-$(CONFIG_FMTCONVERT)          += aarch64/fmtconvert_neon.o
+ NEON-OBJS-$(CONFIG_H264CHROMA)          += aarch64/h264cmc_neon.o
+--- a/libavcodec/ac3dsp.c
++++ b/libavcodec/ac3dsp.c
+@@ -389,7 +389,7 @@
+     c->downmix               = NULL;
+     c->downmix_fixed         = NULL;
+
+-#if ARCH_AARCH64
++#if ARCH_AARCH64 && CONFIG_GPL
+     ff_ac3dsp_init_aarch64(c);
+ #elif ARCH_ARM
+     ff_ac3dsp_init_arm(c);
