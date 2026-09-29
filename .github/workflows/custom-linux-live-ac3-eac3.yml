@@ -1,0 +1,134 @@
+name: Lampa Linux live AC3-EAC3 playback check
+
+# Live playback check for the already published Linux runtimes. The build
+# pipeline only proves that decoders can turn AC3/EAC3 into PCM inside Electron;
+# this workflow plays real content from a stream URL and captures the sound.
+on:
+  workflow_dispatch:
+    inputs:
+      stream_url:
+        description: 'live stream URL with AC3/EAC3 tracks (for example a TorrServer link)'
+        required: true
+      release_tag:
+        description: 'release with the x86_64 runtime'
+        required: false
+        default: 'v44.4.4-linux-x64-ac3-eac3-r4a1'
+      arm64_release_tag:
+        description: 'release with the arm64 runtime (static check only)'
+        required: false
+        default: 'v44.4.4-linux-arm64-ac3-eac3-r5a1'
+      start_seconds:
+        description: 'where to cut the sample from'
+        required: false
+        default: '130'
+      seconds:
+        description: 'how many seconds of audio to capture'
+        required: false
+        default: '20'
+      arch:
+        description: 'x64 runs real playback; arm64 can only be checked statically, there is no arm64 machine'
+        type: choice
+        options: [x64, arm64, both]
+        default: x64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-linux-live-ac3-eac3
+  cancel-in-progress: false
+
+jobs:
+  linux-x64-live:
+    name: Linux x86_64 live playback
+    if: github.repository == 'ARST113/electron' && (inputs.arch == 'x64' || inputs.arch == 'both')
+    runs-on: [self-hosted, Linux, X64, lampa-linux]
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout check scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Report machine state
+        run: |
+          set -euo pipefail
+          uname -a
+          nproc
+          free -m | head -2
+          df -h "$PWD" | tail -1
+          ffmpeg -version | head -1
+
+      - name: Cut samples from the live stream and play them
+        env:
+          STREAM_URL: ${{ inputs.stream_url }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          START_SECONDS: ${{ inputs.start_seconds }}
+          SECONDS_TO_CAPTURE: ${{ inputs.seconds }}
+        run: |
+          set -euo pipefail
+          bash custom/linux-live/run-live.sh "$STREAM_URL" "$RELEASE_TAG" "$START_SECONDS" "$SECONDS_TO_CAPTURE"
+
+      - name: Upload live playback evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-linux-live-ac3-eac3-${{ github.run_number }}
+          path: artifacts/linux-live/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: warn
+
+  linux-arm64-static:
+    name: Linux arm64 static check
+    if: github.repository == 'ARST113/electron' && (inputs.arch == 'arm64' || inputs.arch == 'both')
+    runs-on: [self-hosted, Linux, X64, lampa-linux]
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout check scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify the arm64 runtime statically
+        env:
+          ARM64_RELEASE_TAG: ${{ inputs.arm64_release_tag }}
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/linux-arm64-static"
+          mkdir -p "$artifact"
+          asset=electron-v44.4.4-linux-arm64-ac3-eac3.zip
+          curl -fL --retry 3 -o "$artifact/$asset" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/$ARM64_RELEASE_TAG/$asset"
+          unzip -q -o "$artifact/$asset" -d "$artifact/runtime"
+          sha256sum "$artifact/runtime/electron" "$artifact/runtime/libffmpeg.so" | tee "$artifact/runtime-hashes.txt"
+          file "$artifact/runtime/electron" "$artifact/runtime/libffmpeg.so" | tee "$artifact/file-types.txt"
+          file "$artifact/runtime/electron" | grep -q 'ARM aarch64' || { echo 'Runtime is not aarch64' >&2; exit 1; }
+          {
+            echo 'AC3/EAC3 decoder symbols in libffmpeg.so:'
+            (nm -D --defined-only "$artifact/runtime/libffmpeg.so" 2>/dev/null | grep -E 'ff_(e)?ac3_decoder' || true)
+            strings -a "$artifact/runtime/libffmpeg.so" | grep -E 'ff_(e)?ac3_decoder' | sort -u || true
+          } | tee "$artifact/codec-symbols.txt"
+          grep -q 'ff_ac3_decoder' "$artifact/codec-symbols.txt"
+          grep -q 'ff_eac3_decoder' "$artifact/codec-symbols.txt"
+          echo 'The arm64 runtime carries both decoders. There is no arm64 machine in the fleet, so playback on arm64 stays unverified.' | tee "$artifact/README.txt"
+
+      - name: Upload arm64 static evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-linux-arm64-static-${{ github.run_number }}
+          path: artifacts/linux-arm64-static/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: warn
