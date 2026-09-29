@@ -1,0 +1,146 @@
+name: Lampa macOS x64 DMG and AC3-EAC3 runtime
+
+# Runs on its own once the custom Electron macOS build succeeds, and can also be
+# started by hand with an explicit runtime run id.
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_run_id:
+        description: 'Actions run id of "Custom Electron macOS x64 AC3-EAC3" that provides the runtime (empty = newest successful run)'
+        required: false
+        default: ''
+      torrent_magnet:
+        description: 'magnet: URI for the real torrent check (empty = seed the committed AC3 5.1 sample locally)'
+        required: false
+        default: ''
+  workflow_run:
+    workflows: ['Custom Electron macOS x64 AC3-EAC3']
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: custom-macos-lampa-ac3-eac3
+  cancel-in-progress: false
+
+env:
+  LAMPA_TORRENT_MAGNET: ${{ github.event.inputs.torrent_magnet || '' }}
+
+jobs:
+  macos-x64:
+    name: macOS x64 Lampa DMG and AC3-EAC3 runtime
+    if: >-
+      github.repository == 'ARST113/electron' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: [self-hosted, macOS, X64]
+    timeout-minutes: 720
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout pipeline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+
+      - name: Report machine state
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -m
+          sysctl -n hw.ncpu hw.memsize
+          df -h "$HOME"
+          node --version
+
+      - name: Download the custom Electron runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_RUN_ID: ${{ github.event.inputs.runtime_run_id || (github.event_name == 'workflow_run' && github.event.workflow_run.id) || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/macos
+          python3 custom/macos/fetch-runtime.py "$RUNTIME_RUN_ID" artifacts/macos/download
+          ls -lh artifacts/macos/download
+
+      - name: Unpack and describe the runtime
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/macos/runtime-macos-x64
+          unzip -q -o artifacts/macos/download/electron-v44.4.4-darwin-x64-ac3-eac3.zip \
+            -d artifacts/macos/runtime-macos-x64
+          cp -f artifacts/macos/download/electron-v44.4.4-darwin-x64-ac3-eac3.zip \
+            artifacts/macos/electron-v44.4.4-darwin-x64-ac3-eac3.zip
+          xattr -cr artifacts/macos/runtime-macos-x64 || true
+          ls -l artifacts/macos/runtime-macos-x64
+          python3 custom/macos/runtime-manifest.py \
+            artifacts/macos/runtime-macos-x64 "$PWD" \
+            artifacts/macos/electron-v44.4.4-darwin-x64-ac3-eac3.zip
+
+      - name: Verify AC3-EAC3 decoding and sound
+        run: |
+          set -euo pipefail
+          xattr -cr artifacts/macos/runtime-macos-x64 || true
+          bash custom/macos/verify.sh "$PWD/artifacts/macos/runtime-macos-x64"
+
+      - name: Checkout Lampa Desktop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ARST113/lampa-desktop
+          ref: 1a5ac023e7c5d9ecc81278388ea736a27536170d
+          path: lampa-app
+          persist-credentials: false
+
+      - name: Package Lampa for macOS x64
+        run: |
+          set -euo pipefail
+          bash custom/macos/package.sh "$PWD/lampa-app" "$PWD/artifacts/macos/runtime-macos-x64"
+
+      - name: Real torrent playback with AC3 sound
+        id: torrent
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash custom/macos/torrent-smoke.sh "$PWD/artifacts/macos/runtime-macos-x64"
+
+      - name: Publish runtime, bundle and evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 custom/macos/publish.py
+
+      - name: Upload macOS artifacts and evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-macos-x64-ac3-eac3-${{ github.run_number }}
+          path: artifacts/macos/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Torrent check verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          report = pathlib.Path('artifacts/macos/torrent-playback.json')
+          if not report.is_file():
+              raise SystemExit('torrent check produced no report')
+          data = json.loads(report.read_text())
+          print(json.dumps(data, indent=2))
+          if not data.get('pass'):
+              raise SystemExit('torrent playback produced no audio')
+          PY
