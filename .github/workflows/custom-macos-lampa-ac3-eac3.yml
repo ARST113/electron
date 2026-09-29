@@ -13,6 +13,10 @@ on:
         description: 'magnet: URI for the real torrent check (empty = seed the committed AC3 5.1 sample locally)'
         required: false
         default: ''
+      stream_url:
+        description: 'live stream URL with AC3/EAC3 tracks (for example a TorrServer link) for the real-content check'
+        required: false
+        default: ''
   workflow_run:
     workflows: ['Custom Electron macOS x64 AC3-EAC3']
     types: [completed]
@@ -27,6 +31,7 @@ concurrency:
 
 env:
   LAMPA_TORRENT_MAGNET: ${{ github.event.inputs.torrent_magnet || '' }}
+  LAMPA_TEST_STREAM_URL: ${{ github.event.inputs.stream_url || '' }}
 
 jobs:
   macos-x64:
@@ -111,6 +116,14 @@ jobs:
           set -euo pipefail
           bash custom/macos/torrent-smoke.sh "$PWD/artifacts/macos/runtime-macos-x64"
 
+      - name: Real content from a live stream URL
+        id: realstream
+        if: ${{ github.event.inputs.stream_url != '' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash custom/macos/real-stream.sh "$PWD/artifacts/macos/runtime-macos-x64" "$LAMPA_TEST_STREAM_URL"
+
       - name: Publish runtime, bundle and evidence
         if: always()
         env:
@@ -127,7 +140,7 @@ jobs:
           path: artifacts/macos/
           compression-level: 0
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Torrent check verdict
         if: always()
@@ -143,4 +156,20 @@ jobs:
           print(json.dumps(data, indent=2))
           if not data.get('pass'):
               raise SystemExit('torrent playback produced no audio')
+          PY
+
+      - name: Real content verdict
+        if: ${{ always() && github.event.inputs.stream_url != '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          report = pathlib.Path('artifacts/macos/stream-verdict.json')
+          if not report.is_file():
+              raise SystemExit('real-content check produced no report')
+          data = json.loads(report.read_text())
+          print(json.dumps(data, indent=2))
+          if not data.get('samplePlayed'):
+              raise SystemExit('real content produced no audio in the custom runtime')
           PY

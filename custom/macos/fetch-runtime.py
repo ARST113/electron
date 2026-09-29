@@ -11,6 +11,8 @@ import json
 import os
 import pathlib
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -26,9 +28,28 @@ headers = {
 }
 
 
+class StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """GitHub redirects artifact downloads to pre-signed blob storage.
+
+    Forwarding the bearer token there makes the storage backend answer 401, so the
+    Authorization header is dropped as soon as the redirect leaves api.github.com.
+    """
+
+    def redirect_request(self, req, fp, code, msg, response_headers, new_url):
+        redirected = super().redirect_request(req, fp, code, msg, response_headers, new_url)
+        if redirected is not None and 'api.github.com' not in new_url:
+            redirected.headers.pop('Authorization', None)
+            redirected.headers.pop('authorization', None)
+            redirected.unredirected_hdrs.pop('Authorization', None)
+        return redirected
+
+
+opener = urllib.request.build_opener(StripAuthOnRedirect)
+
+
 def api(url):
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with opener.open(request, timeout=120) as response:
         return json.load(response)
 
 
@@ -49,8 +70,17 @@ artifact = matching[0]
 assert not artifact['expired'], 'runtime artifact has expired; rebuild or re-upload it'
 
 request = urllib.request.Request(artifact['archive_download_url'], headers=headers)
-with urllib.request.urlopen(request, timeout=1800) as response:
-    payload = response.read()
+for attempt in range(3):
+    try:
+        with opener.open(request, timeout=1800) as response:
+            payload = response.read()
+        break
+    except urllib.error.HTTPError as error:
+        if attempt == 2:
+            raise
+        print(f'artifact download attempt {attempt + 1} failed with {error}, retrying')
+        time.sleep(5)
+assert payload, 'artifact download returned no data'
 destination.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(io.BytesIO(payload)) as package:
     package.extractall(destination)
