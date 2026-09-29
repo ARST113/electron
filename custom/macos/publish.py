@@ -87,11 +87,17 @@ evidence = [
 ]
 assets = [runtime_zip, *images, *bundles, *[path for path in evidence if path.is_file()]]
 
+def sha256_of(path):
+    sha = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
 checksums = []
 for file in assets:
-    with file.open('rb') as stream:
-        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-    checksums.append(f'{digest}  {file.name}')
+    checksums.append(f'{sha256_of(file)}  {file.name}')
 (artifact / 'SHASUMS256.txt').write_text('\n'.join(checksums) + '\n')
 assets.append(artifact / 'SHASUMS256.txt')
 
@@ -114,26 +120,28 @@ def api(path, data, method='POST'):
         return json.load(response)
 
 
-body = (
+body_parts = [
     'macOS x86_64 runtime of Electron 44.4.4 built with `enable_platform_ac3_eac3_audio=true`, '
-    '`proprietary_codecs=true` and `ffmpeg_branding="Chrome"`, plus the Lampa Desktop bundle that '
-    'uses exactly this runtime.\n\n'
+    '`proprietary_codecs=true` and `ffmpeg_branding="Chrome"`, plus the Lampa Desktop bundle '
+    'that uses exactly this runtime.',
     f'AC3/EAC3 verification: decodeAudioData to PCM -> {verdict["decodeToPcm"]}, '
-    f'media-element playback with captured audio -> {verdict["playback"]}.\n\n'
+    f'media-element playback with captured audio -> {verdict["playback"]}.',
     f'Torrent check: TorrServer streamed the sample with an AC3 5.1 track and '
     f'{torrent.get("capturedSeconds")} seconds of decoded audio were captured at RMS '
-    f'{torrent.get("rms")} (attached as torrent-audio.wav).\n\n'
-    + (
+    f'{torrent.get("rms")} (attached as torrent-audio.wav).',
+]
+if stream:
+    body_parts.append(
         f'Real content check: {stream.get("capturedSeconds")} seconds of a live stream '
         f'(first AC3/EAC3 track) were decoded at RMS {stream.get("rms")} '
-        f'(attached as stream-audio.wav and stream-sample-ac3.mp4).\n\n'
-        if stream
-        else ''
+        f'(attached as stream-audio.wav and stream-sample-ac3.mp4).'
     )
+body_parts.append(
     'The bundle is ad-hoc signed, not notarized: the first launch needs '
-    'Right click -> Open or `xattr -dr com.apple.quarantine /Applications/Lampa.app`.\n\n'
-    + manifest['sourceRun']
+    'Right click -> Open or `xattr -dr com.apple.quarantine /Applications/Lampa.app`.'
 )
+body_parts.append(manifest['sourceRun'])
+body = '\n\n'.join(part for part in body_parts if part)
 
 release = api(
     '/releases',

@@ -57,6 +57,14 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Syntax check helper scripts
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m py_compile custom/macos/*.py
+          for script in custom/macos/*.sh; do bash -n "$script"; done
+          echo 'Helper scripts parse cleanly'
+
       - name: Report machine state
         run: |
           set -euo pipefail

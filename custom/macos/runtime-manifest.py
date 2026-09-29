@@ -35,12 +35,14 @@ architecture = subprocess.run(['file', str(executable)], check=True, capture_out
 
 
 def digest(path):
+    sha = hashlib.sha256()
     with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
-with archive_path.open('rb') as stream:
-    archive_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
+archive_hash = digest(archive_path)
 
 with zipfile.ZipFile(archive_path) as package:
     names = package.namelist()
