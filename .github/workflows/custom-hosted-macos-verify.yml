@@ -1,0 +1,302 @@
+name: Hosted macOS verification on Apple Silicon
+
+# Runs the finished artifacts on GitHub's own Apple Silicon runners
+# (macos-15 -> macos-15-arm64, RUNNER_ARCH=ARM64, Apple M1).
+#
+# This is the only place where the arm64 macOS build can actually be *executed*:
+# the self-hosted builder is an Intel VM inside QEMU, and macOS arm64 cannot be
+# emulated on it. The repository is public, so hosted macOS runners are free and
+# do not consume the self-hosted machine.
+#
+# Evidence produced: codec verdicts, captured PCM WAV files, app screenshots and
+# a machine report (CPU, macOS version, Rosetta availability).
+on:
+  # Fires automatically once the arm64 Electron build finishes successfully.
+  workflow_run:
+    workflows:
+      - Custom Electron macOS arm64 AC3-EAC3
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      arm64_run_id:
+        description: Run id holding the arm64 Electron artifact (empty = latest arm64 build)
+        required: false
+        default: ''
+      intel_run_id:
+        description: Run id holding the Intel Electron artifact for the Rosetta job
+        required: false
+        default: '36593231087'
+      run_arm64:
+        description: Execute the arm64 runtime natively on Apple Silicon
+        type: boolean
+        default: true
+      run_intel_runtime:
+        description: Execute the Intel runtime under Rosetta on Apple Silicon
+        type: boolean
+        default: true
+      run_published_dmg:
+        description: Launch the published Intel Lampa.app from the release under Rosetta
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # ---------------------------------------------------------------- arm64 ---
+  arm64-native:
+    name: arm64 runtime on Apple Silicon
+    if: >-
+      ${{
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+        || (github.event_name == 'workflow_dispatch' && inputs.run_arm64)
+      }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Resolve the source run
+        id: resolve
+        run: |
+          set -euo pipefail
+          run="${{ github.event.workflow_run.id }}"
+          if [[ -z "$run" ]]; then run="${{ inputs.arm64_run_id }}"; fi
+          if [[ -z "$run" ]]; then run="36681732795"; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Resolved arm64 source run: $run"
+
+      - name: Machine report
+        run: |
+          set -euo pipefail
+          {
+            echo "### arm64 host"
+            echo ""
+            echo "| fact | value |"
+            echo "| --- | --- |"
+            echo "| runner arch | $RUNNER_ARCH |"
+            echo "| macOS | $(sw_vers -productVersion) |"
+            echo "| CPU | $(sysctl -n machdep.cpu.brand_string) |"
+            echo "| cores | $(sysctl -n hw.ncpu) |"
+            echo "| RAM | $(( $(sysctl -n hw.memsize) / 1073741824 )) GiB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          uname -a
+          arch -x86_64 uname -m 2>/dev/null && echo 'Rosetta: available' || echo 'Rosetta: not available'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+
+      - name: Download the arm64 runtime artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: electron-v44.4.4-darwin-arm64-ac3-eac3
+          run-id: ${{ steps.resolve.outputs.run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: download
+
+      - name: Unpack and check the architecture
+        run: |
+          set -euo pipefail
+          ls -lh download
+          if [ -f download/*.sha256 ]; then cat download/*.sha256; fi
+          unzip -q download/*.zip -d runtime
+          ls -d runtime/Electron.app
+          binary=runtime/Electron.app/Contents/MacOS/Electron
+          framework='runtime/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework'
+          file "$binary" "$framework"
+          lipo -archs "$binary" | tee /tmp/archs.txt
+          grep -qw arm64 /tmp/archs.txt || { echo 'The runtime is not arm64'; exit 1; }
+          echo "no x86_64 slice expected: $(lipo -archs "$framework")"
+          vtool -show-build "$binary" | grep -E 'platform|minos|sdk' || true
+          codesign --verify --deep --strict runtime/Electron.app && echo 'codesign verify: ok' || echo '::warning::codesign verify failed'
+
+      - name: Execute the arm64 runtime (AC3/EAC3 playback probe)
+        run: |
+          set -euo pipefail
+          bash custom/macos/verify.sh "$PWD/runtime"
+
+      - name: Report the verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          path = pathlib.Path('artifacts/macos/codec-verdict.json')
+          print('\n### Native arm64 verdict\n')
+          if not path.is_file():
+              print('No verdict file was produced.')
+          else:
+              v = json.loads(path.read_text())
+              print('| codec | decodeAudioData | playback | RMS | captured s |')
+              print('| --- | --- | --- | --- | --- |')
+              for codec in ('ac3', 'eac3'):
+                  d = v['decodeToPcm'][codec]
+                  p = v['playback'][codec]
+                  print(f"| {codec} | {'ok' if d['ok'] else 'FAIL'} | {'ok' if p['ok'] else 'FAIL'} "
+                        f"| {p['rms']} | {p['capturedSeconds']} |")
+              for note in v.get('notes', []):
+                  print(f"\n> {note}")
+          PY
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: arm64-native-evidence
+          path: artifacts/macos
+          retention-days: 14
+
+  # ------------------------------------------------- Intel runtime, Rosetta ---
+  intel-runtime-rosetta:
+    name: Intel runtime under Rosetta
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_intel_runtime == null || inputs.run_intel_runtime) }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Resolve the source run
+        id: resolve
+        run: |
+          set -euo pipefail
+          run="${{ inputs.intel_run_id }}"
+          if [[ -z "$run" ]]; then run="36593231087"; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Resolved Intel source run: $run"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+
+      - name: Download the Intel runtime artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: electron-v44.4.4-darwin-x64-ac3-eac3
+          run-id: ${{ steps.resolve.outputs.run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: download
+
+      - name: Check the architecture and run it under Rosetta
+        run: |
+          set -euo pipefail
+          unzip -q download/*.zip -d runtime
+          binary=runtime/Electron.app/Contents/MacOS/Electron
+          file "$binary"
+          lipo -archs "$binary"
+          echo 'The Intel runtime starts only because Rosetta 2 translates it:'
+          arch -x86_64 "$binary" --version
+          bash custom/macos/verify.sh "$PWD/runtime"
+
+      - name: Report the verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          path = pathlib.Path('artifacts/macos/codec-verdict.json')
+          print('\n### Intel runtime under Rosetta\n')
+          if not path.is_file():
+              print('No verdict file was produced.')
+          else:
+              v = json.loads(path.read_text())
+              print('| codec | decodeAudioData | playback | RMS | captured s |')
+              print('| --- | --- | --- | --- | --- |')
+              for codec in ('ac3', 'eac3'):
+                  d = v['decodeToPcm'][codec]
+                  p = v['playback'][codec]
+                  print(f"| {codec} | {'ok' if d['ok'] else 'FAIL'} | {'ok' if p['ok'] else 'FAIL'} "
+                        f"| {p['rms']} | {p['capturedSeconds']} |")
+          PY
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: intel-rosetta-evidence
+          path: artifacts/macos
+          retention-days: 14
+
+  # -------------------------------------------- published dmg, Rosetta, UI ---
+  published-dmg-rosetta:
+    name: Published Lampa.app under Rosetta
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_published_dmg == null || inputs.run_published_dmg) }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: v1.6.0-ac3.7
+      DMG: lampa-x64-1.6.0-ac3.7-macos-ac3.dmg
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+
+      - name: Download and verify the published Intel dmg
+        run: |
+          set -euo pipefail
+          base="https://github.com/ARST113/lampa-desktop/releases/download/$RELEASE_TAG"
+          mkdir -p dmg && cd dmg
+          curl -sSL -O "$base/$DMG"
+          curl -sSL -o SHASUMS256.txt "$base/SHASUMS256.txt"
+          grep " $DMG\$" SHASUMS256.txt | shasum -a 256 -c -
+          ls -lh
+
+      - name: Mount and extract the application
+        run: |
+          set -euo pipefail
+          hdiutil attach -nobrowse -readonly -mountpoint /tmp/lampa-dmg dmg/*.dmg
+          ditto /tmp/lampa-dmg/Lampa.app /tmp/Lampa.app
+          hdiutil detach /tmp/lampa-dmg
+          xattr -dr com.apple.quarantine /tmp/Lampa.app 2>/dev/null || true
+          file /tmp/Lampa.app/Contents/MacOS/Lampa
+          lipo -archs '/tmp/Lampa.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework'
+          codesign --verify --deep --strict /tmp/Lampa.app && echo 'codesign verify: ok' || echo '::warning::codesign verify failed'
+          ls -lh /tmp/Lampa.app/Contents/Resources/subtitle-tools/ || true
+
+      - name: Start the packaged application and prove it renders
+        run: |
+          set -euo pipefail
+          bash custom/macos/app-smoke.sh /tmp/Lampa.app "$PWD/artifacts/macos"
+        continue-on-error: true
+
+      - name: Play AC3 and EAC3 through the packaged application
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos"
+          fixtures="$PWD/custom/macos/fixtures"
+          mkdir -p "$artifact"
+          binary=/tmp/Lampa.app/Contents/MacOS/Lampa
+          "$binary" --version
+          for codec in ac3 eac3; do
+            "$binary" "$PWD/custom/macos/playback.cjs" "$fixtures/$codec.mp4" \
+              "$artifact/playback-$codec.json" 5 "$artifact/playback-$codec.wav" \
+              --no-sandbox --disable-gpu --user-data-dir="$artifact/profile-$codec" \
+              || echo "::warning::$codec probe exited non-zero"
+          done
+          python3 - "$artifact" <<'PY'
+          import json, pathlib, sys
+          artifact = pathlib.Path(sys.argv[1])
+          lines = ['', '### Published Intel app under Rosetta', '',
+                   '| codec | playback | RMS | peak | captured s |',
+                   '| --- | --- | --- | --- | --- |']
+          supported = True
+          for codec in ('ac3', 'eac3'):
+              path = artifact / f'playback-{codec}.json'
+              data = json.loads(path.read_text()) if path.is_file() else {}
+              ok = bool(data.get('pass'))
+              supported = supported and ok
+              lines.append(f"| {codec} | {'ok' if ok else 'FAIL'} | {data.get('rms')} "
+                           f"| {data.get('peak')} | {data.get('capturedSeconds')} |")
+          print('\n'.join(lines))
+          pathlib.Path('/tmp/verdict-summary.md').write_text('\n'.join(lines) + '\n')
+          if not supported:
+              print('The packaged application produced no PCM for a codec', file=sys.stderr)
+              raise SystemExit(1)
+          PY
+          cat /tmp/verdict-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: published-dmg-rosetta-evidence
+          path: artifacts/macos
+          retention-days: 14
