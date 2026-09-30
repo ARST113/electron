@@ -305,7 +305,8 @@ jobs:
             echo ''
             echo '| check | result |'
             echo '| --- | --- |'
-            echo '| application starts and renders a document | yes (screenshot in the artifact) |'
+            echo '| application process starts and stays alive | yes |'
+            echo '| visible window / devtools target | not produced on the hosted runner |'
             echo "| Electron framework inside the app | \`$shipped\` |"
             echo '| identical to the runtime that played AC3/EAC3 | yes |'
           } >> "$GITHUB_STEP_SUMMARY"
