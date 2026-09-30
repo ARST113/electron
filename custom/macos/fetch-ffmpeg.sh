@@ -2,50 +2,62 @@
 # Ensures static macOS builds of ffmpeg and ffprobe exist and exports
 # FFMPEG_BIN / FFPROBE_BIN. Sourced by other scripts.
 #
+# The target architecture follows LAMPA_FFMPEG_ARCH (x64 by default, arm64 for
+# Apple Silicon bundles) and each architecture keeps its own cache file.
+#
 # Sources, in order:
 #   1. ffmpeg-static release assets (single Mach-O binaries, ffmpeg and ffprobe).
-#   2. evermeet.cx for ffmpeg only: its "ffprobe" archive actually ships another
-#      ffmpeg build, which is exactly why the bundle once had no ffprobe.
-#   3. the imageio-ffmpeg wheel, ffmpeg only, as a last resort.
+#   2. evermeet.cx for x86_64 ffmpeg only: its "ffprobe" archive actually ships
+#      another ffmpeg build, which is why the bundle once had no ffprobe.
+#   3. the imageio-ffmpeg wheel, x86_64 ffmpeg only, as a last resort.
 #
 # Nothing here may abort the caller: a missing ffprobe is tolerable for codec
 # probing (ffmpeg's stderr works too), and every acquisition step is optional.
 tools=${LAMPA_TOOL_CACHE:-$HOME/.cache/lampa-macos-tools}
+arch=${LAMPA_FFMPEG_ARCH:-x64}
 mkdir -p "$tools"
 release=https://github.com/eugeneware/ffmpeg-static/releases/latest/download
 
+case "$arch" in
+  arm64) file_arch='arm64'; suffix='-arm64' ;;
+  *) arch='x64'; file_arch='x86_64'; suffix='' ;;
+esac
+
 valid() { # valid <path> <word that -version must print>
-  if [[ ! -x "$1" ]]; then
+  local path=$1
+  local word=$2
+  if [[ ! -x "$path" ]]; then
     return 1
   fi
-  if "$1" -version 2>/dev/null | head -n 1 | grep -qi -- "$2"; then
-    return 0
+  if ! "$path" -version 2>/dev/null | head -n 1 | grep -qi -- "$word"; then
+    return 1
   fi
-  return 1
+  if command -v file > /dev/null 2>&1; then
+    if ! file "$path" | grep -q "$file_arch"; then
+      echo "::warning::$path is not $file_arch, refetching"
+      return 1
+    fi
+  fi
+  return 0
 }
 
-if ! valid "$tools/ffmpeg" '^ffmpeg version'; then
-  echo 'Fetching a static ffmpeg build for macOS x86_64'
-  rm -f "$tools/ffmpeg"
-  if curl -fL --retry 3 -o "$tools/ffmpeg.part" "$release/ffmpeg-darwin-x64"; then
-    mv -f "$tools/ffmpeg.part" "$tools/ffmpeg"
-  else
-    echo '::warning::could not fetch ffmpeg from ffmpeg-static'
+for name in ffmpeg ffprobe; do
+  target="$tools/$name$suffix"
+  word="^$name version"
+  if valid "$target" "$word"; then
+    continue
   fi
-fi
-
-if ! valid "$tools/ffprobe" '^ffprobe version'; then
-  echo 'Fetching a static ffprobe build for macOS x86_64'
-  rm -f "$tools/ffprobe"
-  if curl -fL --retry 3 -o "$tools/ffprobe.part" "$release/ffprobe-darwin-x64"; then
-    mv -f "$tools/ffprobe.part" "$tools/ffprobe"
+  echo "Fetching a static $name build for macOS $arch"
+  rm -f "$target"
+  if curl -fL --retry 3 -o "$target.part" "$release/$name-darwin-$arch"; then
+    mv -f "$target.part" "$target"
   else
-    echo '::warning::could not fetch ffprobe from ffmpeg-static'
+    echo "::warning::could not fetch $name for $arch from ffmpeg-static"
   fi
-fi
+done
 
-if ! valid "$tools/ffmpeg" '^ffmpeg version'; then
-  echo '::warning::falling back to the evermeet archive for ffmpeg'
+if [[ "$arch" == 'x64' ]] && ! valid "$tools/ffmpeg" '^ffmpeg version'; then
+  echo '::warning::falling back to the evermeet archive for x86_64 ffmpeg'
   if curl -fL --retry 2 -o "$tools/ffmpeg.zip" https://evermeet.cx/ffmpeg/getrelease/zip; then
     rm -rf "$tools/ffmpeg-unpack"
     mkdir -p "$tools/ffmpeg-unpack"
@@ -54,23 +66,16 @@ if ! valid "$tools/ffmpeg" '^ffmpeg version'; then
   fi
 fi
 
-for candidate in ffmpeg ffprobe; do
-  if [[ -f "$tools/$candidate" ]]; then
-    chmod +x "$tools/$candidate" || true
-    xattr -c "$tools/$candidate" 2>/dev/null || true
-  fi
-done
-
 FFMPEG_BIN=""
 FFPROBE_BIN=""
-if valid "$tools/ffmpeg" '^ffmpeg version'; then
-  FFMPEG_BIN="$tools/ffmpeg"
+if valid "$tools/ffmpeg$suffix" '^ffmpeg version'; then
+  FFMPEG_BIN="$tools/ffmpeg$suffix"
 fi
-if valid "$tools/ffprobe" '^ffprobe version'; then
-  FFPROBE_BIN="$tools/ffprobe"
+if valid "$tools/ffprobe$suffix" '^ffprobe version'; then
+  FFPROBE_BIN="$tools/ffprobe$suffix"
 fi
 
-if [[ -z "$FFMPEG_BIN" ]]; then
+if [[ -z "$FFMPEG_BIN" && "$arch" == 'x64' ]]; then
   echo '::warning::falling back to the ffmpeg wheel from PyPI'
   python3 -m pip install --quiet --user imageio-ffmpeg > /dev/null 2>&1 || true
   wheel=$(python3 -c 'import imageio_ffmpeg, sys; sys.stdout.write(imageio_ffmpeg.get_ffmpeg_exe())' 2>/dev/null || true)
@@ -80,6 +85,6 @@ if [[ -z "$FFMPEG_BIN" ]]; then
   fi
 fi
 
-echo "ffmpeg: ${FFMPEG_BIN:-missing}"
-echo "ffprobe: ${FFPROBE_BIN:-missing}"
+echo "ffmpeg ($arch): ${FFMPEG_BIN:-missing}"
+echo "ffprobe ($arch): ${FFPROBE_BIN:-missing}"
 export FFMPEG_BIN FFPROBE_BIN

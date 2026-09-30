@@ -1,0 +1,136 @@
+name: Lampa macOS arm64 DMG and AC3-EAC3 runtime
+
+# Packages the Apple Silicon runtime as soon as its build succeeds. Nothing here
+# can execute the result: the fleet has no arm64 machine, so every check is static.
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_run_id:
+        description: 'Actions run id of "Custom Electron macOS arm64 AC3-EAC3" (empty = newest successful run)'
+        required: false
+        default: ''
+  workflow_run:
+    workflows: ['Custom Electron macOS arm64 AC3-EAC3']
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: custom-macos-arm64-lampa-ac3-eac3
+  cancel-in-progress: false
+
+jobs:
+  macos-arm64:
+    name: macOS arm64 Lampa DMG and AC3-EAC3 runtime
+    if: >-
+      github.repository == 'ARST113/electron' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: [self-hosted, macOS, X64]
+    timeout-minutes: 480
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout pipeline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+
+      - name: Syntax check helper scripts
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m py_compile custom/macos-arm64/*.py
+          for script in custom/macos-arm64/*.sh custom/macos/fetch-ffmpeg.sh; do bash -n "$script"; done
+          echo 'Helper scripts parse cleanly'
+
+      - name: Download the arm64 Electron runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_RUN_ID: ${{ github.event.inputs.runtime_run_id || (github.event_name == 'workflow_run' && github.event.workflow_run.id) || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/macos-arm64
+          python3 custom/macos-arm64/fetch-runtime.py "$RUNTIME_RUN_ID" artifacts/macos-arm64/download
+          ls -lh artifacts/macos-arm64/download
+
+      - name: Unpack and statically verify the runtime
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/macos-arm64/runtime-macos-arm64
+          unzip -q -o artifacts/macos-arm64/download/electron-v44.4.4-darwin-arm64-ac3-eac3.zip \
+            -d artifacts/macos-arm64/runtime-macos-arm64
+          cp -f artifacts/macos-arm64/download/electron-v44.4.4-darwin-arm64-ac3-eac3.zip \
+            artifacts/macos-arm64/electron-v44.4.4-darwin-arm64-ac3-eac3.zip
+          xattr -cr artifacts/macos-arm64/runtime-macos-arm64 || true
+          python3 custom/macos-arm64/static-verify.py \
+            artifacts/macos-arm64/runtime-macos-arm64 "$PWD" \
+            artifacts/macos-arm64/electron-v44.4.4-darwin-arm64-ac3-eac3.zip
+
+      - name: Checkout Lampa Desktop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ARST113/lampa-desktop
+          ref: c02c06ca8cced74d6f5c5173fedd73af40d218b0
+          path: lampa-app
+          persist-credentials: false
+
+      - name: Package Lampa for macOS arm64
+        run: |
+          set -euo pipefail
+          bash custom/macos-arm64/package.sh "$PWD/lampa-app" "$PWD/artifacts/macos-arm64/runtime-macos-arm64"
+
+      - name: Static checks on the bundle and the image
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-arm64"
+          app="$PWD/lampa-app/dist/mac-arm64/Lampa.app"
+          [[ -d "$app" ]] || app="$PWD/lampa-app/dist/mac/Lampa.app"
+          {
+            echo '===== application binary ====='
+            file "$app/Contents/MacOS/Lampa"
+            echo '===== framework ====='
+            file "$app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+            echo '===== bundled subtitle tools ====='
+            file "$app/Contents/Resources/subtitle-tools/ffmpeg" "$app/Contents/Resources/subtitle-tools/ffprobe"
+            echo '===== signature ====='
+            codesign --verify --deep --strict --verbose=2 "$app" 2>&1 || true
+            echo '===== disk image ====='
+            hdiutil imageinfo "$artifact"/*.dmg | grep -E 'Format|Checksum Type|partition-scheme' || true
+          } | tee "$artifact/static-checks.txt"
+
+          echo '===== mounting the image to prove it is readable ====='
+          mountpoint=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" "$artifact"/*.dmg
+          ls -l "$mountpoint" | tee "$artifact/dmg-contents.txt"
+          test -d "$mountpoint/Lampa.app" || { echo 'Lampa.app is missing from the image'; exit 1; }
+          file "$mountpoint/Lampa.app/Contents/MacOS/Lampa"
+          hdiutil detach "$mountpoint"
+          rmdir "$mountpoint"
+          ls -l "$app/Contents/Resources/subtitle-tools" > "$artifact/subtitle-tools.txt" || true
+
+      - name: Publish runtime, bundle and static evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 custom/macos-arm64/publish.py
+
+      - name: Upload arm64 artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-macos-arm64-ac3-eac3-${{ github.run_number }}
+          path: artifacts/macos-arm64/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: warn
