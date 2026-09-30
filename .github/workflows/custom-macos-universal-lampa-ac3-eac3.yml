@@ -32,8 +32,8 @@ jobs:
     if: >-
       github.repository == 'ARST113/electron' &&
       (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
-    runs-on: [self-hosted, macOS, X64]
-    timeout-minutes: 480
+    runs-on: macos-15
+    timeout-minutes: 180
 
     defaults:
       run:
