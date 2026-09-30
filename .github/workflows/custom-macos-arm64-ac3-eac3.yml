@@ -1,0 +1,214 @@
+name: Custom Electron macOS arm64 AC3-EAC3
+
+# Apple Silicon runtime, built on the same x86_64 macOS host as the Intel one.
+# The checkout is shared on purpose: Chromium cross-compiles to arm64 from an
+# Intel host, so only a second GN output directory is needed, not a second
+# 60 GiB source tree and a second two-hour sync.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: custom-electron-macos-arm64-ac3-eac3
+  cancel-in-progress: false
+
+env:
+  ELECTRON_REVISION: v44.4.4
+  BASE_PROFILE: ac3-macos-x64
+  BUILD_PROFILE: ac3-macos-arm64
+  OUT_DIR: Release-arm64
+  CI: '1'
+  GN_EXTRA_ARGS: 'enable_platform_ac3_eac3_audio=true proprietary_codecs=true ffmpeg_branding="Chrome" override_electron_version="44.4.4" dcheck_always_on=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0'
+
+jobs:
+  build-macos-arm64:
+    name: macOS arm64 AC3-EAC3 self-hosted
+    runs-on: [self-hosted, macOS, X64]
+    timeout-minutes: 1440
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Verify macOS build machine
+        run: |
+          set -euo pipefail
+
+          sw_vers
+          test "$(uname -m)" = "x86_64" || {
+            echo "This cross build expects an x86_64 macOS host."
+            exit 1
+          }
+          sysctl -n hw.ncpu
+          sysctl -n hw.memsize
+          df -h "$HOME"
+
+          test -x /usr/bin/xcodebuild || { echo 'Full Xcode is required.'; exit 1; }
+          /usr/bin/xcodebuild -version
+          xcode-select -p
+          xcrun clang --version
+
+          git --version
+          python3 --version
+          node --version
+          npm --version
+
+          BUILD_ROOT="$HOME/electron-build"
+          BUILD_TOOLS_PREFIX="$HOME/.electron-build-tools-npm"
+          ELECTRON_TEMP="$HOME/electron-temp"
+          mkdir -p "$BUILD_ROOT" "$BUILD_TOOLS_PREFIX" "$ELECTRON_TEMP"
+
+          echo "BUILD_ROOT=$BUILD_ROOT" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS_PREFIX=$BUILD_TOOLS_PREFIX" >> "$GITHUB_ENV"
+          echo "TMPDIR=$ELECTRON_TEMP/" >> "$GITHUB_ENV"
+
+          test -d "$BUILD_ROOT/src/electron" || {
+            echo "The shared Electron checkout at $BUILD_ROOT is missing."
+            echo "Run the x64 workflow once; the arm64 build reuses its tree."
+            exit 1
+          }
+
+          FREE_KB="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          FREE_GB="$((FREE_KB / 1024 / 1024))"
+          echo "Free space: $FREE_GB GiB"
+          if [ "$FREE_GB" -lt 120 ]; then
+            echo "At least 120 GiB free is required for an arm64 compile."
+            exit 1
+          fi
+
+      - name: Install Electron build tools in user directory
+        run: |
+          set -euo pipefail
+          npm install --prefix "$BUILD_TOOLS_PREFIX" @electron/build-tools@2.1.5 --no-fund --no-audit
+          BUILD_TOOLS_WRAPPER="$BUILD_TOOLS_PREFIX/node_modules/@electron/build-tools/run.js"
+          test -f "$BUILD_TOOLS_WRAPPER" || {
+            echo "Could not find @electron/build-tools/run.js at $BUILD_TOOLS_WRAPPER"
+            exit 1
+          }
+          echo "BUILD_TOOLS_WRAPPER=$BUILD_TOOLS_WRAPPER" >> "$GITHUB_ENV"
+          node "$BUILD_TOOLS_WRAPPER" --help > /dev/null
+
+      - name: Derive the arm64 profile from the Intel one
+        run: |
+          set -euo pipefail
+
+          CONFIG_DIR="$HOME/.electron_build_tools/configs"
+          SOURCE="$CONFIG_DIR/evm.$BASE_PROFILE.json"
+          TARGET="$CONFIG_DIR/evm.$BUILD_PROFILE.json"
+          test -f "$SOURCE" || {
+            echo "The $BASE_PROFILE profile is missing; run the x64 workflow first."
+            exit 1
+          }
+
+          python3 - "$SOURCE" "$TARGET" "$OUT_DIR" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          source, target, out_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+          config = json.loads(pathlib.Path(source).read_text())
+          args = [arg for arg in config['gen']['args'] if not arg.startswith('target_cpu')]
+          args.append('target_cpu="arm64"')
+          config['gen']['args'] = args
+          config['gen']['out'] = out_dir
+          pathlib.Path(target).write_text(json.dumps(config, indent=2) + '\n')
+          print(json.dumps(config, indent=2))
+          PY
+
+          node "$BUILD_TOOLS_WRAPPER" use "$BUILD_PROFILE"
+          node "$BUILD_TOOLS_WRAPPER" show current
+
+      - name: Sync Electron and Chromium sources
+        run: |
+          set -euo pipefail
+
+          echo "===== Sync started: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+          node "$BUILD_TOOLS_WRAPPER" sync --revision "$ELECTRON_REVISION"
+          echo "===== Sync finished: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+
+          git -C "$BUILD_ROOT/src/electron" rev-parse HEAD
+          git -C "$BUILD_ROOT/src/electron" describe --tags --exact-match HEAD || true
+          df -h "$HOME"
+
+      - name: Generate GN config and build FFmpeg first
+        run: |
+          set -euo pipefail
+          echo "===== FFmpeg for arm64: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+          node "$BUILD_TOOLS_WRAPPER" build --no-remote --target third_party/ffmpeg:ffmpeg
+
+      - name: Verify arm64 GN config
+        run: |
+          set -euo pipefail
+
+          ARGS="$BUILD_ROOT/src/out/$OUT_DIR/args.gn"
+          test -f "$ARGS" || { echo "GN args file not found: $ARGS"; exit 1; }
+          grep -E 'target_cpu|target_os|enable_platform_ac3_eac3_audio|proprietary_codecs|ffmpeg_branding|symbol_level' "$ARGS" || true
+          grep -Eq 'target_cpu[[:space:]]*=[[:space:]]*"arm64"' "$ARGS"
+          grep -Eq 'enable_platform_ac3_eac3_audio[[:space:]]*=[[:space:]]*true' "$ARGS"
+          grep -Eq 'proprietary_codecs[[:space:]]*=[[:space:]]*true' "$ARGS"
+          grep -Eq 'ffmpeg_branding[[:space:]]*=[[:space:]]*"Chrome"' "$ARGS"
+
+          CONFIG="$BUILD_ROOT/src/third_party/ffmpeg/chromium/config/Chrome/mac/arm64"
+          ls "$CONFIG" || true
+
+      - name: Build Electron distribution for arm64
+        run: |
+          set -euo pipefail
+          echo "===== arm64 build started: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+          node "$BUILD_TOOLS_WRAPPER" build --no-remote --target electron:electron_dist_zip
+          echo "===== arm64 build finished: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+
+      - name: Inspect and validate the arm64 output
+        run: |
+          set -euo pipefail
+
+          OUT="$BUILD_ROOT/src/out/$OUT_DIR"
+          SOURCE="$OUT/dist.zip"
+          test -f "$SOURCE" || {
+            echo "Electron dist.zip was not produced for arm64."
+            find "$OUT" -maxdepth 2 -type f -name '*.zip' -print || true
+            exit 1
+          }
+          ls -lh "$SOURCE"
+          unzip -l "$SOURCE" | head -n 20
+
+          BINARY="$OUT/Electron.app/Contents/MacOS/Electron"
+          test -x "$BINARY" || { echo "No Electron binary at $BINARY"; exit 1; }
+          file "$BINARY"
+          file "$BINARY" | grep -q 'arm64' || { echo 'The binary is not arm64'; exit 1; }
+          vtool -show-build "$BINARY" | grep -E 'platform|minos|sdk' || true
+
+          FRAMEWORK="$OUT/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+          file "$FRAMEWORK"
+          file "$FRAMEWORK" | grep -q 'arm64' || { echo 'The framework is not arm64'; exit 1; }
+
+      - name: Prepare artifact
+        run: |
+          set -euo pipefail
+
+          OUT="$BUILD_ROOT/src/out/$OUT_DIR"
+          DEST="$GITHUB_WORKSPACE/electron-v44.4.4-darwin-arm64-ac3-eac3.zip"
+          cp -f "$OUT/dist.zip" "$DEST"
+          cat "$OUT/Electron.app/Contents/Info.plist" | grep -A1 CFBundleShortVersionString || true
+          ls -lh "$DEST"
+          shasum -a 256 "$DEST" | tee "$DEST.sha256"
+
+      - name: Show disk after build
+        if: always()
+        run: |
+          df -h "$HOME"
+          ls -d "$BUILD_ROOT"/src/out/* 2>/dev/null || true
+
+      - name: Upload arm64 Electron
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: electron-v44.4.4-darwin-arm64-ac3-eac3
+          path: |
+            electron-v44.4.4-darwin-arm64-ac3-eac3.zip
+            electron-v44.4.4-darwin-arm64-ac3-eac3.zip.sha256
+          compression-level: 0
+          retention-days: 14
