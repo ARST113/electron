@@ -27,6 +27,8 @@ torrent_path = artifact / 'torrent-playback.json'
 torrent = json.loads(torrent_path.read_text()) if torrent_path.is_file() else {}
 stream_path = artifact / 'stream-verdict.json'
 stream = json.loads(stream_path.read_text()) if stream_path.is_file() else None
+app_path = artifact / 'app-smoke.json'
+app_smoke = json.loads(app_path.read_text()) if app_path.is_file() else None
 
 runtime_zip = artifact / manifest['asset']
 images = sorted(artifact.glob('*.dmg'))
@@ -45,6 +47,7 @@ manifest.update(
     else None,
     codecVerdict=verdict,
     realContent=stream,
+    appSmoke=app_smoke,
     torrentPlayback={
         'ok': bool(torrent.get('pass')),
         'rms': torrent.get('rms'),
@@ -81,6 +84,9 @@ evidence = [
     artifact / 'stream-audio.wav',
     artifact / 'stream-sample-ac3.mp4',
     artifact / 'stream-cut.log',
+    artifact / 'app-smoke.json',
+    artifact / 'app-smoke.png',
+    artifact / 'lampa-app.log',
     artifact / 'torrserver-seeder.log',
     artifact / 'torrent-seeder.log',
     artifact / 'macos-build-info.zip',
@@ -135,6 +141,12 @@ if stream:
         f'Real content check: {stream.get("capturedSeconds")} seconds of a live stream '
         f'(first AC3/EAC3 track) were decoded at RMS {stream.get("rms")} '
         f'(attached as stream-audio.wav and stream-sample-ac3.mp4).'
+    )
+if app_smoke:
+    body_parts.append(
+        f'Application smoke test: Lampa.app started, the renderer reported '
+        f'"{app_smoke.get("title")}" at {app_smoke.get("url")} '
+        f'(screenshot attached as app-smoke.png).'
     )
 body_parts.append(
     'The bundle is ad-hoc signed, not notarized: the first launch needs '

@@ -117,6 +117,13 @@ jobs:
           set -euo pipefail
           bash custom/macos/package.sh "$PWD/lampa-app" "$PWD/artifacts/macos/runtime-macos-x64"
 
+      - name: Launch the packaged Lampa app
+        id: appsmoke
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash custom/macos/app-smoke.sh "$PWD/lampa-app/dist/mac/Lampa.app" "$PWD/artifacts/macos"
+
       - name: Real torrent playback with AC3 sound
         id: torrent
         continue-on-error: true
@@ -164,6 +171,22 @@ jobs:
           print(json.dumps(data, indent=2))
           if not data.get('pass'):
               raise SystemExit('torrent playback produced no audio')
+          PY
+
+      - name: Lampa app verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          report = pathlib.Path('artifacts/macos/app-smoke.json')
+          if not report.is_file():
+              raise SystemExit('the packaged application was never probed')
+          data = json.loads(report.read_text())
+          print(json.dumps(data, indent=2))
+          if not data.get('pass') or not data.get('stayedAlive'):
+              raise SystemExit('the packaged Lampa.app did not render a document')
           PY
 
       - name: Real content verdict

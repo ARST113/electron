@@ -19,6 +19,22 @@ tools="$HOME/.cache/lampa-macos-tools"
 mkdir -p "$artifact" "$tools"
 [[ -x "$electron" ]] || { echo "Electron runtime not found at $electron" >&2; exit 1; }
 
+# macOS has neither timeout nor gtimeout by default, so every long call goes
+# through this wrapper: GNU timeout when it exists, plain execution otherwise
+# (the workflow step timeout is the backstop).
+limit() {
+  local seconds=$1
+  shift
+  if command -v timeout > /dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout > /dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
+
+
 # --- ffmpeg -------------------------------------------------------------------
 # evermeet.cx serves static builds. The ffprobe archive is optional: when it is
 # missing the codec list is read from ffmpeg's stderr instead. A failed chmod here
@@ -60,10 +76,10 @@ echo "ffmpeg: $ffmpeg"
 echo "ffprobe: ${ffprobe:-none}"
 
 if [[ -n "$ffprobe" ]]; then
-  timeout 300 "$ffprobe" -v error -show_entries stream=index,codec_type,codec_name,channels,sample_rate \
+  limit 300 "$ffprobe" -v error -show_entries stream=index,codec_type,codec_name,channels,sample_rate \
     -of json "$url" > "$artifact/stream-info.json" || echo '::warning::ffprobe failed on the live stream'
 else
-  timeout 300 "$ffmpeg" -hide_banner -i "$url" > /dev/null 2> "$artifact/stream-info.txt" || true
+  limit 300 "$ffmpeg" -hide_banner -i "$url" > /dev/null 2> "$artifact/stream-info.txt" || true
 fi
 [[ -s "$artifact/stream-info.json" ]] && cat "$artifact/stream-info.json" || cat "$artifact/stream-info.txt" 2>/dev/null || true
 
@@ -72,10 +88,10 @@ sample="$artifact/stream-sample-ac3.mp4"
 start=${REAL_STREAM_START:-120}
 length=${REAL_STREAM_SECONDS:-20}
 echo "Cutting $length seconds from $start s of the live stream"
-if ! timeout 900 "$ffmpeg" -hide_banner -loglevel warning -y -ss "$start" -t "$length" -i "$url" \
+if ! limit 900 "$ffmpeg" -hide_banner -loglevel warning -y -ss "$start" -t "$length" -i "$url" \
   -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart -f mp4 "$sample" 2> "$artifact/stream-cut.log"; then
   echo '::warning::seek failed, cutting from the beginning of the stream'
-  timeout 900 "$ffmpeg" -hide_banner -loglevel warning -y -t "$length" -i "$url" \
+  limit 900 "$ffmpeg" -hide_banner -loglevel warning -y -t "$length" -i "$url" \
     -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart -f mp4 "$sample" 2>> "$artifact/stream-cut.log" || true
 fi
 ls -lh "$sample" 2>/dev/null || echo '::warning::no sample was produced'
