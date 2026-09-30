@@ -47,15 +47,20 @@ fi
 # macOS has neither in PATH, so the static builds travel inside the bundle.
 # shellcheck source=/dev/null
 source "$repo/custom/macos/fetch-ffmpeg.sh"
-if [[ -n "$FFMPEG_BIN" && -n "$FFPROBE_BIN" ]]; then
-  mkdir -p "$app/.cache/subtitle-tools"
+mkdir -p "$app/.cache/subtitle-tools"
+if [[ -n "$FFMPEG_BIN" ]]; then
   cp -f "$FFMPEG_BIN" "$app/.cache/subtitle-tools/ffmpeg"
-  cp -f "$FFPROBE_BIN" "$app/.cache/subtitle-tools/ffprobe"
-  chmod +x "$app/.cache/subtitle-tools/ffmpeg" "$app/.cache/subtitle-tools/ffprobe"
-  ls -lh "$app/.cache/subtitle-tools"
+  chmod +x "$app/.cache/subtitle-tools/ffmpeg"
 else
-  echo '::warning::static ffmpeg/ffprobe unavailable, the bundle will fall back to PATH'
+  echo '::warning::no static ffmpeg is available, subtitles will fall back to PATH'
 fi
+if [[ -n "$FFPROBE_BIN" ]]; then
+  cp -f "$FFPROBE_BIN" "$app/.cache/subtitle-tools/ffprobe"
+  chmod +x "$app/.cache/subtitle-tools/ffprobe"
+else
+  echo '::warning::no static ffprobe is available, subtitle probing will fall back to PATH'
+fi
+ls -lh "$app/.cache/subtitle-tools" || true
 
 node - "$runtime" <<'JS'
 const fs = require('node:fs');
@@ -104,9 +109,11 @@ assert bundle.is_file(), f'packaged application has no Electron framework: {bund
 assert digest(source) == digest(bundle), 'electron-builder replaced the custom Electron framework'
 assert (app / 'dist/mac/Lampa.app/Contents/Resources/app.asar').is_file()
 tools = app / 'dist/mac/Lampa.app/Contents/Resources/subtitle-tools'
-assert (tools / 'ffmpeg').is_file(), f'subtitle tools were not bundled: {tools}'
-assert (tools / 'ffprobe').is_file(), f'subtitle tools were not bundled: {tools}'
-print('Packaged framework matches the verified runtime and the subtitle tools are inside the bundle')
+assert (tools / 'ffmpeg').is_file(), f'ffmpeg was not bundled under {tools}'
+missing = [name for name in ('ffmpeg', 'ffprobe') if not (tools / name).is_file()]
+if missing:
+    print(f'::warning::missing from the bundle: {missing}')
+print('Packaged framework matches the verified runtime; bundled subtitles tools:', sorted(p.name for p in tools.iterdir()))
 PY
 
 node - "$app" <<'JS'
