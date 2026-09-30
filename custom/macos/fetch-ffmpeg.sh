@@ -51,6 +51,10 @@ for name in ffmpeg ffprobe; do
   rm -f "$target"
   if curl -fL --retry 3 -o "$target.part" "$release/$name-darwin-$arch"; then
     mv -f "$target.part" "$target"
+    # curl writes with the umask, so the downloaded binary is not executable and
+    # every probe below would reject it. This used to be masked on x86_64 by the
+    # evermeet fallback, whose zip restores the mode; arm64 has no fallback.
+    chmod +x "$target"
   else
     echo "::warning::could not fetch $name for $arch from ffmpeg-static"
   fi
