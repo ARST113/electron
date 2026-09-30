@@ -1,0 +1,198 @@
+name: Lampa macOS universal DMG (x64 + arm64)
+
+# One .dmg that runs natively on Intel and on Apple Silicon: the two Electron
+# runtimes are lipo-joined into a single universal bundle. Runs automatically once
+# the arm64 build succeeds, because that artifact is the missing half.
+on:
+  workflow_dispatch:
+    inputs:
+      x64_run_id:
+        description: 'Actions run id of "Custom Electron macOS x64 AC3-EAC3" (empty = newest successful run)'
+        required: false
+        default: ''
+      arm64_run_id:
+        description: 'Actions run id of "Custom Electron macOS arm64 AC3-EAC3" (empty = newest successful run)'
+        required: false
+        default: ''
+  workflow_run:
+    workflows: ['Custom Electron macOS arm64 AC3-EAC3']
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: custom-macos-universal-lampa-ac3-eac3
+  cancel-in-progress: false
+
+jobs:
+  macos-universal:
+    name: macOS universal Lampa DMG
+    if: >-
+      github.repository == 'ARST113/electron' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: [self-hosted, macOS, X64]
+    timeout-minutes: 480
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout pipeline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+
+      - name: Syntax check helper scripts
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m py_compile custom/macos-universal/*.py custom/macos/*.py custom/macos-arm64/*.py
+          for script in custom/macos-universal/*.sh custom/macos/*.sh custom/macos-arm64/*.sh; do bash -n "$script"; done
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import re
+
+          pins = json.loads(pathlib.Path('custom/macos-universal/pins.json').read_text())
+          workflow = pathlib.Path('.github/workflows/custom-macos-universal-lampa-ac3-eac3.yml').read_text()
+          match = re.search(r'ref: ([0-9a-f]{40})', workflow)
+          assert match, 'the Lampa checkout pin is missing from the workflow'
+          assert match.group(1) == pins['lampa_revision'], (
+              f"the workflow pins {match.group(1)} but pins.json says {pins['lampa_revision']}")
+          print('Lampa revision is pinned consistently:', pins['lampa_revision'])
+          PY
+
+      - name: Report machine state
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -m
+          df -h "$HOME" | tail -1
+
+      - name: Download both runtimes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          X64_RUN_ID: ${{ github.event.inputs.x64_run_id || '' }}
+          ARM64_RUN_ID: ${{ github.event.inputs.arm64_run_id || (github.event_name == 'workflow_run' && github.event.workflow_run.id) || '' }}
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-universal"
+          mkdir -p "$artifact"
+          python3 custom/macos/fetch-runtime.py "$X64_RUN_ID" "$artifact/x64"
+          python3 custom/macos-arm64/fetch-runtime.py "$ARM64_RUN_ID" "$artifact/arm64"
+          ls -lh "$artifact/x64" "$artifact/arm64"
+
+      - name: Unpack and verify both runtimes
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-universal"
+          x64_zip="$artifact/x64/electron-v44.4.4-darwin-x64-ac3-eac3.zip"
+          arm64_zip="$artifact/arm64/electron-v44.4.4-darwin-arm64-ac3-eac3.zip"
+          unzip -q -o "$x64_zip" -d "$artifact/runtime-x64"
+          unzip -q -o "$arm64_zip" -d "$artifact/runtime-arm64"
+          xattr -cr "$artifact/runtime-x64" "$artifact/runtime-arm64" || true
+          python3 custom/macos/runtime-manifest.py "$artifact/runtime-x64" "$PWD" "$x64_zip"
+          python3 custom/macos-arm64/static-verify.py "$artifact/runtime-arm64" "$PWD" "$arm64_zip"
+
+      - name: Merge the two runtimes into one universal bundle
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-universal"
+          tools="$HOME/.cache/lampa-universal-tools"
+          mkdir -p "$tools"
+          if [[ ! -d "$tools/node_modules/@electron/universal" ]]; then
+            npm install --prefix "$tools" --no-audit --no-fund @electron/universal
+          fi
+          cp -f custom/macos-universal/merge-universal.mjs "$tools/merge-universal.mjs"
+
+          # Stale signatures would make the merge fail before it starts.
+          find "$artifact/runtime-x64/Electron.app" "$artifact/runtime-arm64/Electron.app" \
+            -name _CodeSignature -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+          mkdir -p "$artifact/runtime-universal"
+          node "$tools/merge-universal.mjs" \
+            "$artifact/runtime-x64/Electron.app" \
+            "$artifact/runtime-arm64/Electron.app" \
+            "$artifact/runtime-universal/Electron.app"
+
+          cp -f "$artifact/runtime-x64/version" "$artifact/runtime-universal/version"
+          lipo -info "$artifact/runtime-universal/Electron.app/Contents/MacOS/Electron" | tee "$artifact/lipo-report.txt"
+          lipo -info "$artifact/runtime-universal/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework" | tee -a "$artifact/lipo-report.txt"
+
+      - name: Describe and pack the universal runtime
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-universal"
+          ( cd "$artifact/runtime-universal" && zip -qry "../electron-v44.4.4-darwin-universal-ac3-eac3.zip" Electron.app version )
+          python3 custom/macos-universal/manifest.py \
+            "$artifact/runtime-universal" "$PWD" \
+            "$artifact/electron-v44.4.4-darwin-universal-ac3-eac3.zip"
+          shasum -a 256 "$artifact/electron-v44.4.4-darwin-universal-ac3-eac3.zip" | tee "$artifact/SHASUMS256.txt"
+
+      - name: Checkout Lampa Desktop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ARST113/lampa-desktop
+          ref: c02c06ca8cced74d6f5c5173fedd73af40d218b0
+          path: lampa-app
+          persist-credentials: false
+
+      - name: Package the universal Lampa bundle
+        run: |
+          set -euo pipefail
+          bash custom/macos-universal/package.sh "$PWD/lampa-app" "$PWD/artifacts/macos-universal/runtime-universal"
+
+      - name: Static checks on the bundle and the image
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-universal"
+          app="$PWD/lampa-app/dist/mac/Lampa.app"
+          {
+            echo '===== application binary ====='
+            lipo -info "$app/Contents/MacOS/Lampa"
+            echo '===== framework ====='
+            lipo -info "$app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+            echo '===== bundled subtitle tools ====='
+            lipo -info "$app/Contents/Resources/subtitle-tools/ffmpeg"
+            lipo -info "$app/Contents/Resources/subtitle-tools/ffprobe"
+            echo '===== signature ====='
+            codesign --verify --deep --strict --verbose=2 "$app" 2>&1 || true
+            echo '===== disk image ====='
+            hdiutil imageinfo "$artifact"/*.dmg | grep -E 'Format|Checksum Type|partition-scheme' || true
+          } | tee "$artifact/static-checks.txt"
+
+          mountpoint=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" "$artifact"/*.dmg
+          ls -l "$mountpoint" | tee "$artifact/dmg-contents.txt"
+          test -d "$mountpoint/Lampa.app" || { echo 'Lampa.app is missing from the image'; exit 1; }
+          lipo -info "$mountpoint/Lampa.app/Contents/MacOS/Lampa"
+          hdiutil detach "$mountpoint"
+          rmdir "$mountpoint"
+
+      - name: Publish the universal runtime and bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="$PWD/artifacts/macos-universal"
+          export X64_SOURCE_RUN="$(cat "$artifact/x64/runtime-run.txt" 2>/dev/null || true)"
+          export ARM64_SOURCE_RUN="$(cat "$artifact/arm64/runtime-run.txt" 2>/dev/null || true)"
+          python3 custom/macos-universal/publish.py
+
+      - name: Upload universal artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: lampa-macos-universal-ac3-eac3-${{ github.run_number }}
+          path: artifacts/macos-universal/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: warn
