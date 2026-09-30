@@ -1,7 +1,9 @@
 name: Lampa macOS arm64 DMG and AC3-EAC3 runtime
 
-# Packages the Apple Silicon runtime as soon as its build succeeds. Nothing here
-# can execute the result: the fleet has no arm64 machine, so every check is static.
+# Packages the Apple Silicon runtime as soon as its build succeeds. Runs on a
+# GitHub-hosted Apple Silicon runner, so packaging no longer depends on the
+# self-hosted builder, and the result can be executed natively afterwards by
+# custom-hosted-macos-verify.yml.
 on:
   workflow_dispatch:
     inputs:
@@ -27,8 +29,8 @@ jobs:
     if: >-
       github.repository == 'ARST113/electron' &&
       (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
-    runs-on: [self-hosted, macOS, X64]
-    timeout-minutes: 480
+    runs-on: macos-15
+    timeout-minutes: 180
 
     defaults:
       run:
