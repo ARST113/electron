@@ -5,8 +5,9 @@
   "runtime_workflow": "custom-macos-ac3-eac3.yml",
   "runtime_artifact": "electron-v44.4.4-darwin-x64-ac3-eac3",
   "lampa_repository": "ARST113/lampa-desktop",
-  "lampa_revision": "1a5ac023e7c5d9ecc81278388ea736a27536170d",
+  "lampa_revision": "c02c06ca8cced74d6f5c5173fedd73af40d218b0",
   "lampa_version": "1.6.0-ac3.7",
   "torrserver_project": "YouROK/TorrServer",
-  "torrserver_asset": "TorrServer-darwin-amd64"
+  "torrserver_asset": "TorrServer-darwin-amd64",
+  "lampa_branch": "macos/ac3-eac3"
 }

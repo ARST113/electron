@@ -36,40 +36,12 @@ limit() {
 
 
 # --- ffmpeg -------------------------------------------------------------------
-# evermeet.cx serves static builds. The ffprobe archive is optional: when it is
-# missing the codec list is read from ffmpeg's stderr instead. A failed chmod here
-# used to abort the whole step, so every acquisition step is non-fatal.
-ffmpeg=""
-ffprobe=""
-if [[ ! -x "$tools/ffmpeg" ]]; then
-  echo 'Fetching a static ffmpeg build for macOS x86_64'
-  if curl -fL --retry 2 -o "$tools/ffmpeg.zip" https://evermeet.cx/ffmpeg/getrelease/zip; then
-    unzip -q -o "$tools/ffmpeg.zip" -d "$tools" || true
-  else
-    echo '::warning::static ffmpeg download failed'
-  fi
-fi
-if [[ ! -x "$tools/ffprobe" ]]; then
-  if curl -fL --retry 2 -o "$tools/ffprobe.zip" https://evermeet.cx/ffprobe/getrelease/zip; then
-    unzip -q -o "$tools/ffprobe.zip" -d "$tools" || true
-  else
-    echo '::warning::static ffprobe download failed, using ffmpeg stderr instead'
-  fi
-fi
-for candidate in ffmpeg ffprobe; do
-  if [[ -f "$tools/$candidate" ]]; then
-    chmod +x "$tools/$candidate" || true
-    xattr -c "$tools/$candidate" 2>/dev/null || true
-  fi
-done
-[[ -x "$tools/ffmpeg" ]] && ffmpeg="$tools/ffmpeg"
-[[ -x "$tools/ffprobe" ]] && ffprobe="$tools/ffprobe"
-if [[ -z "$ffmpeg" ]]; then
-  echo '::warning::falling back to the ffmpeg wheel from PyPI'
-  python3 -m pip install --quiet --user imageio-ffmpeg
-  ffmpeg=$(python3 -c 'import imageio_ffmpeg, sys; sys.stdout.write(imageio_ffmpeg.get_ffmpeg_exe())')
-  chmod +x "$ffmpeg" 2>/dev/null || true
-fi
+# Shared helper: static builds land in the tool cache and are exported as
+# FFMPEG_BIN / FFPROBE_BIN. A missing ffprobe is fine, ffmpeg alone is enough.
+# shellcheck source=/dev/null
+source "$repo/custom/macos/fetch-ffmpeg.sh"
+ffmpeg="$FFMPEG_BIN"
+ffprobe="$FFPROBE_BIN"
 [[ -n "$ffmpeg" ]] || { echo 'No ffmpeg available for the real-content check' >&2; exit 1; }
 "$ffmpeg" -version > /dev/null 2>&1 || { echo "ffmpeg at $ffmpeg does not run" >&2; exit 1; }
 echo "ffmpeg: $ffmpeg"

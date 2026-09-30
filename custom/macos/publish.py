@@ -29,6 +29,8 @@ stream_path = artifact / 'stream-verdict.json'
 stream = json.loads(stream_path.read_text()) if stream_path.is_file() else None
 app_path = artifact / 'app-smoke.json'
 app_smoke = json.loads(app_path.read_text()) if app_path.is_file() else None
+subtitle_path = artifact / 'subtitle-verdict.json'
+subtitles = json.loads(subtitle_path.read_text()) if subtitle_path.is_file() else None
 
 runtime_zip = artifact / manifest['asset']
 images = sorted(artifact.glob('*.dmg'))
@@ -48,6 +50,7 @@ manifest.update(
     codecVerdict=verdict,
     realContent=stream,
     appSmoke=app_smoke,
+    subtitles=subtitles,
     torrentPlayback={
         'ok': bool(torrent.get('pass')),
         'rms': torrent.get('rms'),
@@ -87,6 +90,8 @@ evidence = [
     artifact / 'app-smoke.json',
     artifact / 'app-smoke.png',
     artifact / 'lampa-app.log',
+    artifact / 'subtitle-verdict.json',
+    artifact / 'subtitle-sample.vtt',
     artifact / 'torrserver-seeder.log',
     artifact / 'torrent-seeder.log',
     artifact / 'macos-build-info.zip',
@@ -147,6 +152,14 @@ if app_smoke:
         f'Application smoke test: Lampa.app started, the renderer reported '
         f'"{app_smoke.get("title")}" at {app_smoke.get("url")} '
         f'(screenshot attached as app-smoke.png).'
+    )
+if subtitles:
+    streams = subtitles.get('streams') or []
+    languages = ', '.join(sorted({stream.get('language') for stream in streams if stream.get('language')}))
+    body_parts.append(
+        f'Subtitles: the bundle probed {len(streams)} tracks ({languages}) and extracted '
+        f'{subtitles.get("cues")} cues from a live stream using its own bundled ffmpeg '
+        f'(attached as subtitle-sample.vtt).'
     )
 body_parts.append(
     'The bundle is ad-hoc signed, not notarized: the first launch needs '

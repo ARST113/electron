@@ -43,6 +43,20 @@ if compgen -G "test/*.test.cjs" > /dev/null; then
   node --test test/*.test.cjs
 fi
 
+# The application calls ffmpeg/ffprobe for subtitle probing and extraction, and
+# macOS has neither in PATH, so the static builds travel inside the bundle.
+# shellcheck source=/dev/null
+source "$repo/custom/macos/fetch-ffmpeg.sh"
+if [[ -n "$FFMPEG_BIN" && -n "$FFPROBE_BIN" ]]; then
+  mkdir -p "$app/.cache/subtitle-tools"
+  cp -f "$FFMPEG_BIN" "$app/.cache/subtitle-tools/ffmpeg"
+  cp -f "$FFPROBE_BIN" "$app/.cache/subtitle-tools/ffprobe"
+  chmod +x "$app/.cache/subtitle-tools/ffmpeg" "$app/.cache/subtitle-tools/ffprobe"
+  ls -lh "$app/.cache/subtitle-tools"
+else
+  echo '::warning::static ffmpeg/ffprobe unavailable, the bundle will fall back to PATH'
+fi
+
 node - "$runtime" <<'JS'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -52,9 +66,9 @@ const config = {
   ...pkg.build,
   electronDist: path.resolve(process.argv[2]),
   electronVersion: '44.4.4',
-  // The bundled subtitle helpers are Windows executables; macOS relies on the
-  // app's own extraction paths, so nothing is copied into the bundle.
-  extraResources: [],
+  extraResources: [
+    { from: '.cache/subtitle-tools', to: 'subtitle-tools', filter: ['ffmpeg', 'ffprobe'] },
+  ],
   artifactName: 'lampa-${arch}-${version}-macos-ac3.${ext}',
   mac: {
     ...pkg.build.mac,
@@ -89,7 +103,10 @@ bundle = app / 'dist/mac/Lampa.app' / relative
 assert bundle.is_file(), f'packaged application has no Electron framework: {bundle}'
 assert digest(source) == digest(bundle), 'electron-builder replaced the custom Electron framework'
 assert (app / 'dist/mac/Lampa.app/Contents/Resources/app.asar').is_file()
-print('Packaged framework matches the verified runtime')
+tools = app / 'dist/mac/Lampa.app/Contents/Resources/subtitle-tools'
+assert (tools / 'ffmpeg').is_file(), f'subtitle tools were not bundled: {tools}'
+assert (tools / 'ffprobe').is_file(), f'subtitle tools were not bundled: {tools}'
+print('Packaged framework matches the verified runtime and the subtitle tools are inside the bundle')
 PY
 
 node - "$app" <<'JS'

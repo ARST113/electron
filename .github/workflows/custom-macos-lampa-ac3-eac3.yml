@@ -108,7 +108,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ARST113/lampa-desktop
-          ref: 1a5ac023e7c5d9ecc81278388ea736a27536170d
+          ref: c02c06ca8cced74d6f5c5173fedd73af40d218b0
           path: lampa-app
           persist-credentials: false
 
@@ -123,6 +123,16 @@ jobs:
         run: |
           set -euo pipefail
           bash custom/macos/app-smoke.sh "$PWD/lampa-app/dist/mac/Lampa.app" "$PWD/artifacts/macos"
+
+      - name: Subtitles through the packaged bundle
+        id: subtitles
+        if: ${{ github.event.inputs.stream_url != '' }}
+        continue-on-error: true
+        env:
+          LAMPA_TEST_STREAM_URL: ${{ github.event.inputs.stream_url }}
+        run: |
+          set -euo pipefail
+          bash custom/macos/subtitle-check.sh "$PWD/lampa-app/dist/mac/Lampa.app" "$LAMPA_TEST_STREAM_URL"
 
       - name: Real torrent playback with AC3 sound
         id: torrent
@@ -171,6 +181,22 @@ jobs:
           print(json.dumps(data, indent=2))
           if not data.get('pass'):
               raise SystemExit('torrent playback produced no audio')
+          PY
+
+      - name: Subtitle verdict
+        if: ${{ always() && github.event.inputs.stream_url != '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          report = pathlib.Path('artifacts/macos/subtitle-verdict.json')
+          if not report.is_file():
+              raise SystemExit('the subtitle check produced no report')
+          data = json.loads(report.read_text())
+          print(json.dumps(data, indent=2))
+          if not data.get('pass'):
+              raise SystemExit('the packaged bundle could not probe or extract subtitles')
           PY
 
       - name: Lampa app verdict
