@@ -1,7 +1,7 @@
 {
   "electron_version": "44.4.4",
   "electron_revision": "b2004823e907e9a8dd4aa2e7c078963000c04e2e",
-  "chromium_version": "155.0.8046.0",
+  "chromium_version": "152.0.7977.130",
   "runtime_workflow": "custom-macos-ac3-eac3.yml",
   "runtime_artifact": "electron-v44.4.4-darwin-x64-ac3-eac3",
   "lampa_repository": "ARST113/lampa-desktop",

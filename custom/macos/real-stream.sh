@@ -20,48 +20,62 @@ mkdir -p "$artifact" "$tools"
 [[ -x "$electron" ]] || { echo "Electron runtime not found at $electron" >&2; exit 1; }
 
 # --- ffmpeg -------------------------------------------------------------------
+# evermeet.cx serves static builds. The ffprobe archive is optional: when it is
+# missing the codec list is read from ffmpeg's stderr instead. A failed chmod here
+# used to abort the whole step, so every acquisition step is non-fatal.
 ffmpeg=""
 ffprobe=""
-if [[ -x "$tools/ffmpeg" ]]; then
-  ffmpeg="$tools/ffmpeg"
-  [[ -x "$tools/ffprobe" ]] && ffprobe="$tools/ffprobe"
-else
+if [[ ! -x "$tools/ffmpeg" ]]; then
   echo 'Fetching a static ffmpeg build for macOS x86_64'
   if curl -fL --retry 2 -o "$tools/ffmpeg.zip" https://evermeet.cx/ffmpeg/getrelease/zip; then
-    unzip -q -o "$tools/ffmpeg.zip" -d "$tools"
-    chmod +x "$tools/ffmpeg"
-    ffmpeg="$tools/ffmpeg"
-  fi
-  if curl -fL --retry 2 -o "$tools/ffprobe.zip" https://evermeet.cx/ffprobe/getrelease/zip; then
-    unzip -q -o "$tools/ffprobe.zip" -d "$tools"
-    chmod +x "$tools/ffprobe"
-    ffprobe="$tools/ffprobe"
-  fi
-  if [[ -z "$ffmpeg" ]]; then
-    echo 'Falling back to the ffmpeg wheel from PyPI'
-    python3 -m pip install --quiet --user imageio-ffmpeg
-    ffmpeg=$(python3 -c 'import imageio_ffmpeg, sys; sys.stdout.write(imageio_ffmpeg.get_ffmpeg_exe())')
+    unzip -q -o "$tools/ffmpeg.zip" -d "$tools" || true
+  else
+    echo '::warning::static ffmpeg download failed'
   fi
 fi
-[[ -x "$ffmpeg" || -n "$ffmpeg" ]] || { echo 'No ffmpeg available' >&2; exit 1; }
-xattr -c "$ffmpeg" 2>/dev/null || true
-[[ -n "$ffprobe" ]] && xattr -c "$ffprobe" 2>/dev/null || true
+if [[ ! -x "$tools/ffprobe" ]]; then
+  if curl -fL --retry 2 -o "$tools/ffprobe.zip" https://evermeet.cx/ffprobe/getrelease/zip; then
+    unzip -q -o "$tools/ffprobe.zip" -d "$tools" || true
+  else
+    echo '::warning::static ffprobe download failed, using ffmpeg stderr instead'
+  fi
+fi
+for candidate in ffmpeg ffprobe; do
+  if [[ -f "$tools/$candidate" ]]; then
+    chmod +x "$tools/$candidate" || true
+    xattr -c "$tools/$candidate" 2>/dev/null || true
+  fi
+done
+[[ -x "$tools/ffmpeg" ]] && ffmpeg="$tools/ffmpeg"
+[[ -x "$tools/ffprobe" ]] && ffprobe="$tools/ffprobe"
+if [[ -z "$ffmpeg" ]]; then
+  echo '::warning::falling back to the ffmpeg wheel from PyPI'
+  python3 -m pip install --quiet --user imageio-ffmpeg
+  ffmpeg=$(python3 -c 'import imageio_ffmpeg, sys; sys.stdout.write(imageio_ffmpeg.get_ffmpeg_exe())')
+  chmod +x "$ffmpeg" 2>/dev/null || true
+fi
+[[ -n "$ffmpeg" ]] || { echo 'No ffmpeg available for the real-content check' >&2; exit 1; }
+"$ffmpeg" -version > /dev/null 2>&1 || { echo "ffmpeg at $ffmpeg does not run" >&2; exit 1; }
+echo "ffmpeg: $ffmpeg"
+echo "ffprobe: ${ffprobe:-none}"
 
 if [[ -n "$ffprobe" ]]; then
   timeout 300 "$ffprobe" -v error -show_entries stream=index,codec_type,codec_name,channels,sample_rate \
-    -of json "$url" > "$artifact/stream-info.json" || echo '::warning::ffprobe failed'
+    -of json "$url" > "$artifact/stream-info.json" || echo '::warning::ffprobe failed on the live stream'
 else
   timeout 300 "$ffmpeg" -hide_banner -i "$url" > /dev/null 2> "$artifact/stream-info.txt" || true
 fi
-[[ -f "$artifact/stream-info.json" ]] && cat "$artifact/stream-info.json" || cat "$artifact/stream-info.txt" || true
+[[ -s "$artifact/stream-info.json" ]] && cat "$artifact/stream-info.json" || cat "$artifact/stream-info.txt" 2>/dev/null || true
 
 # --- playable sample cut straight from the live stream ------------------------
 sample="$artifact/stream-sample-ac3.mp4"
-echo "Cutting a playable sample from the live stream"
-if ! timeout 900 "$ffmpeg" -hide_banner -loglevel warning -y -ss 120 -t 20 -i "$url" \
+start=${REAL_STREAM_START:-120}
+length=${REAL_STREAM_SECONDS:-20}
+echo "Cutting $length seconds from $start s of the live stream"
+if ! timeout 900 "$ffmpeg" -hide_banner -loglevel warning -y -ss "$start" -t "$length" -i "$url" \
   -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart -f mp4 "$sample" 2> "$artifact/stream-cut.log"; then
   echo '::warning::seek failed, cutting from the beginning of the stream'
-  timeout 900 "$ffmpeg" -hide_banner -loglevel warning -y -t 20 -i "$url" \
+  timeout 900 "$ffmpeg" -hide_banner -loglevel warning -y -t "$length" -i "$url" \
     -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart -f mp4 "$sample" 2>> "$artifact/stream-cut.log" || true
 fi
 ls -lh "$sample" 2>/dev/null || echo '::warning::no sample was produced'
@@ -102,5 +116,22 @@ if not verdict['samplePlayed']:
 print('Real content played with', verdict['capturedSeconds'], 'seconds captured at RMS', verdict['rms'])
 PY
 else
-  echo 'No playable sample, skipping the real-content playback probe'
+  echo '::warning::no playable sample was cut, recording the failure'
+  python3 - "$artifact" <<'PY'
+import json
+import pathlib
+import sys
+
+artifact = pathlib.Path(sys.argv[1])
+cut = (artifact / 'stream-cut.log')
+verdict = {
+    'rawContainerPlayed': None,
+    'samplePlayed': False,
+    'reason': 'the live stream could not be cut into a playable sample',
+    'cutLog': cut.read_text()[-2000:] if cut.is_file() else None,
+}
+(artifact / 'stream-verdict.json').write_text(json.dumps(verdict, indent=2) + '\n')
+print(json.dumps(verdict, indent=2))
+raise SystemExit('Could not cut a playable sample from the live stream')
+PY
 fi
