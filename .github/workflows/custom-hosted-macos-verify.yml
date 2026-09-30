@@ -264,12 +264,19 @@ jobs:
           fixtures="$PWD/custom/macos/fixtures"
           mkdir -p "$artifact"
           binary=/tmp/Lampa.app/Contents/MacOS/Lampa
-          "$binary" --version
+          # A packaged Electron app answers --version by starting itself, so the
+          # runtime versions are read through the bundled Node instead.
+          ELECTRON_RUN_AS_NODE=1 "$binary" -p 'JSON.stringify(process.versions)' || true
+          plutil -p /tmp/Lampa.app/Contents/Info.plist \
+            | grep -E 'CFBundleShortVersionString|CFBundleVersion' || true
+          # Every probe runs under a watchdog: a media element that never starts
+          # must not be able to eat the whole job budget.
           for codec in ac3 eac3; do
-            "$binary" "$PWD/custom/macos/playback.cjs" "$fixtures/$codec.mp4" \
+            perl -e 'alarm shift; exec @ARGV' 180 \
+              "$binary" "$PWD/custom/macos/playback.cjs" "$fixtures/$codec.mp4" \
               "$artifact/playback-$codec.json" 5 "$artifact/playback-$codec.wav" \
               --no-sandbox --disable-gpu --user-data-dir="$artifact/profile-$codec" \
-              || echo "::warning::$codec probe exited non-zero"
+              || echo "::warning::$codec probe exited non-zero or was killed by the watchdog"
           done
           python3 - "$artifact" <<'PY'
           import json, pathlib, sys
