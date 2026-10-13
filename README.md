@@ -1,3 +1,20 @@
+## Скачать Electron с AC3/EAC3 — все платформы
+
+> Специальные сборки **Electron 44.4.4** для Lampa Desktop. Это **рантайм Electron для разработчиков**, а не готовый установщик Lampa. Готовое приложение: [Lampa Desktop — скачать для Windows, Linux и macOS](https://github.com/ARST113/lampa-desktop#скачать-lampa-desktop).
+
+| Платформа | Архитектура | Скачать Electron 44.4.4 AC3/EAC3 |
+| --- | --- | --- |
+| ![Windows](https://img.shields.io/badge/Windows-0078D4?logo=windows11&logoColor=white) | x64 (Intel / AMD) | [**ZIP — Windows x64**](https://github.com/ARST113/electron/releases/download/v44.4.4-ac3-eac3/electron-v44.4.4-win32-x64-ac3-eac3.zip) |
+| ![macOS](https://img.shields.io/badge/macOS-222222?logo=apple&logoColor=white) | Universal (Intel + Apple Silicon) | [**ZIP — macOS Universal**](https://github.com/ARST113/electron/releases/download/v44.4.4-macos-universal-ac3-eac3-r4a1/electron-v44.4.4-darwin-universal-ac3-eac3.zip) |
+| ![macOS](https://img.shields.io/badge/macOS-222222?logo=apple&logoColor=white) | ARM64 (Apple Silicon) | [**ZIP — macOS ARM64**](https://github.com/ARST113/electron/releases/download/v44.4.4-macos-arm64-ac3-eac3-r4a1/electron-v44.4.4-darwin-arm64-ac3-eac3.zip) |
+| ![macOS](https://img.shields.io/badge/macOS-222222?logo=apple&logoColor=white) | x64 (Intel) | [**ZIP — macOS Intel**](https://github.com/ARST113/electron/releases/download/v44.4.4-macos-x64-ac3-eac3-r7a1/electron-v44.4.4-darwin-x64-ac3-eac3.zip) |
+| ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black) | x64 (Intel / AMD) | [**ZIP — Linux x64**](https://github.com/ARST113/electron/releases/download/v44.4.4-linux-x64-ac3-eac3-r4a1/electron-v44.4.4-linux-x64-ac3-eac3.zip) |
+| ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black) | ARM64 (aarch64) | [**ZIP — Linux ARM64**](https://github.com/ARST113/electron/releases/download/v44.4.4-linux-arm64-ac3-eac3-r5a1/electron-v44.4.4-linux-arm64-ac3-eac3.zip) |
+
+Все ссылки ведут непосредственно на **проверенные файлы существующих релизов** этого форка. Архитектуры x86 (32-bit), Windows ARM64 и Linux x86 (32-bit) здесь не опубликованы. [История всех сборок](https://github.com/ARST113/electron/releases) · [Скачать приложение Lampa Desktop](https://github.com/ARST113/lampa-desktop/releases/latest).
+
+---
+
 [![Electron Logo](https://electronjs.org/images/electron-logo.svg)](https://electronjs.org)
 
 [![GitHub Actions Build Status](https://github.com/electron/electron/actions/workflows/build.yml/badge.svg)](https://github.com/electron/electron/actions/workflows/build.yml)
