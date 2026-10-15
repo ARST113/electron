@@ -7,6 +7,10 @@ on:
     paths:
       - custom/hdr-dv-probe/**
       - .github/workflows/hdr-dv-existing-electron.yml
+  pull_request:
+    paths:
+      - custom/hdr-dv-probe/**
+      - .github/workflows/hdr-dv-existing-electron.yml
   workflow_dispatch:
 
 permissions:
