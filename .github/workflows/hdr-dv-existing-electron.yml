@@ -1,0 +1,160 @@
+name: Existing Electron HDR10 HLG Dolby Vision diagnostic
+
+on:
+  push:
+    branches:
+      - tests/hdr-dolbyvision-runtime-20261015
+    paths:
+      - custom/hdr-dv-probe/**
+      - .github/workflows/hdr-dv-existing-electron.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdr-dv-existing-electron-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-fixtures:
+    name: Produce reproducible SDR HDR10 HLG fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Generate and validate video with ffprobe
+        run: bash custom/hdr-dv-probe/make-fixtures.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdr-dv-source-fixtures
+          path: fixtures/
+          if-no-files-found: error
+          retention-days: 7
+
+  runtime-tests:
+    name: ${{ matrix.id }} pinned Electron HDR and DV check
+    needs: generate-fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            runner: windows-2025
+            platform: win32
+            tag: v44.4.4-ac3-eac3
+            asset: electron-v44.4.4-win32-x64-ac3-eac3.zip
+          - id: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            tag: v44.4.4-linux-x64-ac3-eac3-r4a1
+            asset: electron-v44.4.4-linux-x64-ac3-eac3.zip
+          - id: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            tag: v44.4.4-linux-arm64-ac3-eac3-r5a1
+            asset: electron-v44.4.4-linux-arm64-ac3-eac3.zip
+          - id: macos-x64
+            runner: macos-15-intel
+            platform: macos
+            tag: v44.4.4-macos-x64-ac3-eac3-r7a1
+            asset: electron-v44.4.4-darwin-x64-ac3-eac3.zip
+          - id: macos-arm64
+            runner: macos-15
+            platform: macos
+            tag: v44.4.4-macos-arm64-ac3-eac3-r4a1
+            asset: electron-v44.4.4-darwin-arm64-ac3-eac3.zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: hdr-dv-source-fixtures
+          path: fixtures
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Download prebuilt, pinned Electron runtime from this repository
+        shell: bash
+        env:
+          RUNTIME_TAG: ${{ matrix.tag }}
+          RUNTIME_ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p runtime-download
+          gh release download "$RUNTIME_TAG" --repo ARST113/electron --dir runtime-download --pattern "$RUNTIME_ASSET" --clobber
+          ls -lh runtime-download/
+      - name: Unpack Linux/macOS Electron runtime
+        if: matrix.platform != 'win32'
+        shell: bash
+        env:
+          RUNTIME_ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p runtime
+          unzip -q "runtime-download/$RUNTIME_ASSET" -d runtime
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            xattr -cr runtime/Electron.app || true
+            test -x runtime/Electron.app/Contents/MacOS/Electron
+          else
+            chmod +x runtime/electron
+            test -x runtime/electron
+          fi
+          cat runtime/version
+      - name: Unpack Windows Electron runtime
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        env:
+          RUNTIME_ASSET: ${{ matrix.asset }}
+        run: |
+          Expand-Archive -LiteralPath "runtime-download/$env:RUNTIME_ASSET" -DestinationPath runtime -Force
+          Get-Content runtime/version
+          if (!(Test-Path runtime/electron.exe)) { throw "Missing custom Electron" }
+      - name: Install Linux X11 dependencies for headless actual video playback
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1
+      - name: Playback, frame counters and codec capability checks on Linux/macOS
+        if: matrix.platform != 'win32'
+        shell: bash
+        env:
+          PROBE_ID: ${{ matrix.id }}
+        run: |
+          mkdir -p "artifacts/$PROBE_ID"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            runtime/Electron.app/Contents/MacOS/Electron \
+              custom/hdr-dv-probe/probe.cjs fixtures "artifacts/$PROBE_ID/report.json" \
+              > "artifacts/$PROBE_ID/runtime.log" 2>&1
+          else
+            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1280x720x24' \
+              runtime/electron --no-sandbox \
+              custom/hdr-dv-probe/probe.cjs fixtures "artifacts/$PROBE_ID/report.json" \
+              > "artifacts/$PROBE_ID/runtime.log" 2>&1
+          fi
+          cat "artifacts/$PROBE_ID/report.json"
+      - name: Playback, frame counters and codec capability checks on Windows
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        env:
+          PROBE_ID: ${{ matrix.id }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "artifacts/$env:PROBE_ID" | Out-Null
+          & ./runtime/electron.exe custom/hdr-dv-probe/probe.cjs fixtures "artifacts/$env:PROBE_ID/report.json" *>&1 |
+            Out-File -FilePath "artifacts/$env:PROBE_ID/runtime.log" -Encoding utf8
+          if (!(Test-Path "artifacts/$env:PROBE_ID/report.json")) { throw "Probe report not created" }
+          Get-Content "artifacts/$env:PROBE_ID/report.json"
+      - name: Upload diagnostic reports for this architecture even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hdr-dv-${{ matrix.id }}-diagnostics
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
